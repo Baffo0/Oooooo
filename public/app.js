@@ -977,6 +977,23 @@ function openDetail(id) {
   renderMarkers();
   renderDetail();
   $('#sheet').scrollTop = 0;
+  revealSelected();
+}
+
+// Come su Google Maps: su telefono la cabina scelta resta visibile tra la barra di
+// ricerca e la scheda, invece di finire nascosta sotto di essa.
+function revealSelected() {
+  const cab = getCabinet(state.selectedId);
+  const sheet = $('#sheet');
+  if (!cab || isDesktop() || sheet.hidden) return;
+  const box = map.getContainer().getBoundingClientRect();
+  const top = Math.max($('#top').getBoundingClientRect().bottom - box.top, 0) + 12;
+  const bottom = sheet.getBoundingClientRect().top - box.top - 12;
+  if (bottom - top < 90) return;
+  const p = map.latLngToContainerPoint([cab.lat, cab.lng]);
+  const pinTop = p.y - 46; // il segnaposto sta sopra il punto esatto
+  if (pinTop >= top && p.y <= bottom) return;
+  map.panBy([0, p.y - (top + bottom) / 2 - 20], { animate: true, duration: 0.3 });
 }
 
 function closeDetail() {
