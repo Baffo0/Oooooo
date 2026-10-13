@@ -17,10 +17,22 @@ dell'APK, che viene pubblicato sempre allo stesso indirizzo:
 
 **https://github.com/Baffo0/Oooooo/releases/download/apk-test/cabine-fibra.apk**
 
-1. Apri il link dal telefono Android (Chrome va bene).
-2. Apri il file scaricato. La prima volta Android chiede di consentire al browser di
-   **«installare app sconosciute»**: attiva l'opzione, torna indietro e tocca **Installa**.
-3. Le build successive si installano come **aggiornamento** (sono firmate tutte con la
+1. **Solo Samsung Galaxy**: disattiva **Blocco automatico** (*Auto Blocker*) in
+   **Impostazioni → Sicurezza e privacy → Blocco automatico**. Sui Samsung recenti è
+   attivo di serie e blocca in silenzio ogni APK che non arriva da Play Store o Galaxy
+   Store: il download arriva al 100% ma l'installazione non parte. Puoi riattivarlo dopo
+   l'installazione (l'app continua a funzionare; va disattivato di nuovo solo per
+   installare un aggiornamento).
+2. Apri il link dal telefono con **Chrome** o **Samsung Internet** (non dall'app in cui
+   hai ricevuto il link, che di solito non può installare app). Se il browser avvisa che
+   il file potrebbe essere dannoso, tocca **Scarica comunque**.
+3. Apri il file scaricato dalla notifica del download oppure dall'app **Archivio**
+   (*My Files*) → **Download** → `cabine-fibra.apk`.
+4. La prima volta Android chiede di consentire a quell'app di **«installare app
+   sconosciute»**: attiva l'opzione, torna indietro e tocca **Installa**.
+5. Se compare **Play Protect** («app non riconosciuta»), tocca **Altri dettagli →
+   Installa comunque**.
+6. Le build successive si installano come **aggiornamento** (sono firmate tutte con la
    stessa chiave di prova): le cabine salvate sul telefono restano.
 
 L'APK di ogni build si trova anche tra gli *artifact* dell'esecuzione in

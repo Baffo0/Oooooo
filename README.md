@@ -32,6 +32,8 @@ Al primo avvio si sceglie come usarla:
 
 Si può cambiare in ogni momento dal menu in alto a destra, alla voce **Modalità e server**. Dettagli in [android/README.md](android/README.md).
 
+**Sui Samsung Galaxy** prima di installare va disattivato **Blocco automatico** (Impostazioni → Sicurezza e privacy → Blocco automatico): è attivo di serie e blocca gli APK scaricati fuori dagli store. I passaggi completi sono in [android/README.md](android/README.md#installare-lapk-di-prova).
+
 L'APK viene costruito automaticamente da GitHub Actions a ogni modifica (file `.github/workflows/android.yml`).
 
 ## Provarlo sul computer

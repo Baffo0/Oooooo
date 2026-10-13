@@ -92,9 +92,11 @@ jobs:
           APK di prova di **Cabine Fibra**, versione 0.1.${RUN_NUMBER} (build ${RUN_NUMBER}), dal commit ${COMMIT_SHA}.
 
           **Come installarlo sul telefono Android**
-          1. Dal telefono apri il link https://github.com/${GH_REPO}/releases/download/apk-test/cabine-fibra.apk
-          2. Apri il file scaricato. Se il telefono lo chiede, consenti al browser di «installare app sconosciute» e torna indietro.
-          3. Tocca «Installa» (oppure «Aggiorna» se l'app c'è già: le cabine salvate restano).
+          1. Samsung Galaxy: disattiva prima «Blocco automatico» in Impostazioni → Sicurezza e privacy → Blocco automatico. È attivo di serie e blocca gli APK scaricati fuori dagli store (il download arriva al 100% ma non si installa). Puoi riattivarlo dopo l'installazione.
+          2. Apri il link con Chrome o Samsung Internet: https://github.com/${GH_REPO}/releases/download/apk-test/cabine-fibra.apk (se il browser avvisa che il file potrebbe essere dannoso, tocca «Scarica comunque»).
+          3. Apri il file dalla notifica del download oppure dall'app «Archivio» → Download → cabine-fibra.apk.
+          4. Se il telefono lo chiede, consenti a quell'app di «installare app sconosciute» e torna indietro.
+          5. Tocca «Installa» (oppure «Aggiorna» se l'app c'è già: le cabine salvate restano). Se Play Protect avvisa, tocca «Altri dettagli» → «Installa comunque».
 
           Al primo avvio scegli «Prova sul telefono» (cabine salvate solo sul telefono) oppure «Server della squadra».
           Questa release viene sostituita a ogni nuova build: il link resta sempre lo stesso.
