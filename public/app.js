@@ -1810,6 +1810,10 @@ document.addEventListener('keydown', (e) => {
 // Testi che cambiano tra server di squadra e prova sul telefono.
 function setupModeTexts() {
   if (NATIVE) {
+    // Anche dalla schermata di accesso si deve poter cambiare server (password sconosciuta,
+    // server sbagliato) o passare alla prova sul telefono.
+    $('#login-settings').hidden = false;
+    $('#login-settings').addEventListener('click', () => NATIVE.openSettings());
     $('#menu-settings').hidden = false;
     $('#export-intro').textContent = 'Condividi una copia di tutte le cabine (WhatsApp, email, Drive…), come backup o per aprirle in altri programmi.';
   }

@@ -1,0 +1,119 @@
+name: APK Android
+
+# Compila l'APK di prova a ogni modifica dell'app (nativa o web) e lo pubblica sempre
+# allo stesso indirizzo:
+# https://github.com/Baffo0/Oooooo/releases/download/apk-test/cabine-fibra.apk
+on:
+  push:
+    branches:
+      - claude/open-fiber-cabinet-locator-f9x85l
+      - main
+    paths:
+      - 'android/**'
+      - 'public/**'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Conta solo l'ultima modifica: una compilazione vecchia ancora in corso viene annullata.
+    # Vale solo per questo job: la pubblicazione (job "release") non va mai interrotta a
+    # metà, altrimenti il link fisso resterebbe senza APK.
+    concurrency:
+      group: android-apk
+      cancel-in-progress: true
+    # La compilazione esegue codice scaricato (plugin Android, dipendenze): le basta leggere.
+    permissions:
+      contents: read
+
+    steps:
+      - name: Scarica il codice
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Installa Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Prepara Gradle (con cache)
+        uses: gradle/actions/setup-gradle@v4
+
+      # L'Android SDK è già installato sulle macchine ubuntu-latest di GitHub.
+      - name: Compila l'APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleDebug
+
+      - name: Rinomina l'APK
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk cabine-fibra.apk
+
+      # Prima l'artifact: se la pubblicazione della release fallisce, l'APK resta
+      # comunque scaricabile dalla pagina di questa esecuzione.
+      - name: Salva l'APK come artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cabine-fibra-apk
+          path: cabine-fibra.apk
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Una pubblicazione alla volta e mai annullata: quella più recente aspetta la precedente.
+    concurrency:
+      group: android-apk-release
+      cancel-in-progress: false
+    permissions:
+      contents: write
+
+    steps:
+      - name: Recupera l'APK compilato
+        uses: actions/download-artifact@v4
+        with:
+          name: cabine-fibra-apk
+
+      - name: Pubblica la release di prova (apk-test)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          test -s cabine-fibra.apk
+
+          cat > release-notes.md <<EOF
+          APK di prova di **Cabine Fibra**, versione 0.1.${RUN_NUMBER} (build ${RUN_NUMBER}), dal commit ${COMMIT_SHA}.
+
+          **Come installarlo sul telefono Android**
+          1. Dal telefono apri il link https://github.com/${GH_REPO}/releases/download/apk-test/cabine-fibra.apk
+          2. Apri il file scaricato. Se il telefono lo chiede, consenti al browser di «installare app sconosciute» e torna indietro.
+          3. Tocca «Installa» (oppure «Aggiorna» se l'app c'è già: le cabine salvate restano).
+
+          Al primo avvio scegli «Prova sul telefono» (cabine salvate solo sul telefono) oppure «Server della squadra».
+          Questa release viene sostituita a ogni nuova build: il link resta sempre lo stesso.
+
+          Attenzione: è un APK di prova firmato con una chiave pubblica. Installalo e aggiornalo solo da questo link, mai da file ricevuti in altro modo.
+          EOF
+
+          # Una sola release "mobile": si cancella la precedente (con il suo tag) e si ricrea.
+          # Fino a 3 tentativi, per non lasciare il link senza APK per un errore passeggero.
+          for attempt in 1 2 3; do
+            gh release delete apk-test --cleanup-tag --yes || true
+            if gh release create apk-test cabine-fibra.apk \
+                --prerelease \
+                --target "${COMMIT_SHA}" \
+                --title "APK di prova (build ${RUN_NUMBER})" \
+                --notes-file release-notes.md; then
+              exit 0
+            fi
+            echo "Pubblicazione non riuscita (tentativo ${attempt}), riprovo tra 15 secondi."
+            sleep 15
+          done
+          exit 1

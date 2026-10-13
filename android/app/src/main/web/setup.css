@@ -1,0 +1,186 @@
+/* Pagina di scelta modalità dell'app Android: stessi colori e forme della web app. */
+:root {
+  --accent: #0f6b5c;
+  --accent-strong: #0b5649;
+  --accent-soft: #e3f2ef;
+  --on-accent: #ffffff;
+  --bg: #f4f6f7;
+  --surface: #ffffff;
+  --text: #17212b;
+  --muted: #5d6b78;
+  --border: #d8dee3;
+  --danger: #c62828;
+  --danger-bg: #fdecea;
+  --warning-bg: #fff4dc;
+  --warning-text: #7a4b00;
+  --shadow: 0 6px 24px rgba(15, 30, 40, 0.12);
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --accent: #3fb59e;
+    --accent-strong: #5cc8b2;
+    --accent-soft: #163a34;
+    --on-accent: #08201b;
+    --bg: #0f1418;
+    --surface: #182027;
+    --text: #e6edf2;
+    --muted: #9aa8b4;
+    --border: #2b3741;
+    --danger: #ff6b6b;
+    --danger-bg: #3a1c1c;
+    --warning-bg: #3a2c0d;
+    --warning-text: #f5c86a;
+    --shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  }
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Testata verde: prosegue il colore della barra di stato dell'app. */
+.top {
+  position: relative;
+  background: #0f6b5c;
+  color: #fff;
+  text-align: center;
+  padding: calc(20px + env(safe-area-inset-top)) 20px 44px;
+}
+.top.has-back { padding-top: calc(52px + env(safe-area-inset-top)); }
+.top h1 { margin: 6px 0 4px; font-size: 1.6rem; line-height: 1.2; }
+.top p { margin: 0 auto; max-width: 340px; opacity: 0.9; }
+.logo { width: 64px; height: 64px; display: block; margin: 8px auto 0; }
+
+.back {
+  position: absolute;
+  top: calc(8px + env(safe-area-inset-top));
+  left: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 44px;
+  padding: 6px 12px 6px 6px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #fff;
+  font: inherit;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.back:active { background: rgba(255, 255, 255, 0.16); }
+.back svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Le schede salgono un po' sulla testata. */
+.content {
+  max-width: 460px;
+  margin: -28px auto 0;
+  padding: 0 16px 8px;
+  position: relative;
+}
+
+.banner {
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-weight: 600;
+  box-shadow: var(--shadow);
+}
+.banner.info { background: var(--accent-soft); color: var(--text); font-weight: 500; }
+
+.card {
+  position: relative;
+  background: var(--surface);
+  border: 2px solid transparent;
+  border-radius: 18px;
+  padding: 18px 18px 20px;
+  margin: 0 0 14px;
+  box-shadow: var(--shadow);
+}
+.card.is-current { border-color: var(--accent); }
+.card h2 { margin: 0 0 6px; font-size: 1.2rem; line-height: 1.25; padding-right: 72px; }
+.card p { margin: 0 0 14px; color: var(--muted); }
+
+.badge {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+label { display: block; font-weight: 600; font-size: 0.9rem; margin: 0 0 6px; }
+input {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 16px; /* niente zoom automatico sul campo */
+}
+input:focus-visible, button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 48px;
+  margin-top: 12px;
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.card > .btn { margin-top: 0; }
+.btn:disabled { opacity: 0.6; cursor: default; }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.btn-primary:active:not(:disabled) { background: var(--accent-strong); border-color: var(--accent-strong); }
+.btn-secondary { color: var(--accent); border-color: var(--accent); }
+
+.warning, .error {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 0.9rem;
+}
+.warning { background: var(--warning-bg); color: var(--warning-text); }
+.error { background: var(--danger-bg); color: var(--danger); }
+
+.note { margin: 4px 4px 0; color: var(--muted); font-size: 0.9rem; text-align: center; }
+
+.footer {
+  padding: 18px 16px calc(18px + env(safe-area-inset-bottom));
+  color: var(--muted);
+  font-size: 0.85rem;
+  text-align: center;
+}

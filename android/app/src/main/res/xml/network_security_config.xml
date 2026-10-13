@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Fiducia dei certificati https (vale anche per la WebView).
+     Oltre ai certificati di sistema aggiunge le radici di Let's Encrypt (ISRG Root X1 e X2):
+     Android 7.0 non le ha, e senza di esse i server con un certificato Let's Encrypt
+     (il caso più comune) risulterebbero non validi.
+     cleartextTrafficPermitted: con questo file android:usesCleartextTraffic del manifest
+     viene ignorato, quindi http:// (server di prova in rete locale) va permesso qui. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="@raw/isrg_root_x1" />
+            <certificates src="@raw/isrg_root_x2" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

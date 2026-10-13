@@ -3,3 +3,12 @@ data/
 .env
 *.log
 .DS_Store
+
+# Android (build dell'APK)
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/*.iml
+android/app/*.iml

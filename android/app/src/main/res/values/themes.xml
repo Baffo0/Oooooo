@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Tema senza barra azioni: tutto lo schermo è della WebView. Lo sfondo verde si vede
+         all'avvio e dietro le barre di sistema (l'app disegna sotto di esse, edge-to-edge). -->
+    <style name="Theme.CabineFibra" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/accent</item>
+        <item name="colorPrimaryDark">@color/accent_dark</item>
+        <item name="colorAccent">@color/accent</item>
+        <item name="android:windowBackground">@color/accent</item>
+        <item name="android:statusBarColor">@color/accent</item>
+        <item name="android:navigationBarColor">@color/accent</item>
+    </style>
+</resources>

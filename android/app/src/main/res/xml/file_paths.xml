@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Cartelle della cache condivise con altre app tramite FileProvider:
+     exports/ per i file da condividere, images/ per le foto scattate con la fotocamera. -->
+<paths>
+    <cache-path name="exports" path="exports/" />
+    <cache-path name="images" path="images/" />
+</paths>

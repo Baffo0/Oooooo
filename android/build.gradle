@@ -1,0 +1,5 @@
+// File di build principale: dichiara solo la versione del plugin Android,
+// la configurazione vera e propria è in app/build.gradle.
+plugins {
+    id 'com.android.application' version '8.7.3' apply false
+}

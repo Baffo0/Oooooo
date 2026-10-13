@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f6b5c">
+  <title>Cabine Fibra · Modalità</title>
+  <link rel="stylesheet" href="setup.css">
+</head>
+<body>
+  <header class="top">
+    <button id="back" class="back" type="button" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+      Torna alla mappa
+    </button>
+    <svg class="logo" viewBox="0 0 512 512" aria-hidden="true">
+      <path d="M256 92c-70 0-126 55-126 124 0 92 126 204 126 204s126-112 126-204c0-69-56-124-126-124z" fill="#fff"/>
+      <rect x="206" y="160" width="100" height="120" rx="12" fill="#0f6b5c"/>
+      <path d="M226 190h60M226 216h60M226 242h60" stroke="#fff" stroke-width="12" stroke-linecap="round"/>
+    </svg>
+    <h1>Cabine Fibra</h1>
+    <p>La mappa delle cabine della fibra dove lavora la squadra. Scegli come usare l'app.</p>
+  </header>
+
+  <main class="content">
+    <div id="banner" class="banner" role="alert" hidden></div>
+
+    <section id="card-local" class="card" aria-labelledby="local-title">
+      <span class="badge" hidden>In uso</span>
+      <h2 id="local-title">Prova sul telefono</h2>
+      <p>Le cabine restano salvate solo su questo telefono. Ideale per provare l'app.</p>
+      <button id="use-local" class="btn btn-primary" type="button">Inizia</button>
+    </section>
+
+    <section id="card-server" class="card" aria-labelledby="server-title">
+      <span class="badge" hidden>In uso</span>
+      <h2 id="server-title">Server della squadra</h2>
+      <p>Le cabine sono condivise con tutta la squadra. Chiedi l'indirizzo a chi gestisce il server.</p>
+      <form id="server-form" novalidate>
+        <label for="server-url">Indirizzo del server</label>
+        <input id="server-url" name="url" type="url" inputmode="url" autocomplete="url"
+               autocapitalize="off" autocorrect="off" spellcheck="false"
+               placeholder="https://cabine.tuodominio.it">
+        <p id="server-warning" class="warning" hidden>Senza https il GPS non funzionerà</p>
+        <p id="server-error" class="error" role="alert" hidden></p>
+        <button id="connect" class="btn btn-primary" type="submit">Collegati</button>
+        <button id="connect-anyway" class="btn btn-secondary" type="button" hidden>Collegati comunque</button>
+      </form>
+    </section>
+
+    <p class="note">Cambiare modalità non cancella le cabine salvate sul telefono: tornando a «Prova sul telefono» le ritrovi.</p>
+  </main>
+
+  <footer id="version" class="footer">Versione</footer>
+
+  <script src="setup.js"></script>
+</body>
+</html>

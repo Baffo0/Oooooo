@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Versione a un colore per le icone a tema (Android 13+): conta solo la forma,
+     quindi la cabina è un foro nel segnaposto (evenOdd) con le tre righe piene. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:scaleX="0.155"
+        android:scaleY="0.155"
+        android:translateX="14.32"
+        android:translateY="14.32">
+        <path
+            android:fillColor="#FFFFFF"
+            android:fillType="evenOdd"
+            android:pathData="M256,92c-70,0 -126,55 -126,124 0,92 126,204 126,204s126,-112 126,-204c0,-69 -56,-124 -126,-124z M218,160h76a12,12 0,0 1,12 12v96a12,12 0,0 1,-12 12h-76a12,12 0,0 1,-12 -12v-96a12,12 0,0 1,12 -12z" />
+        <path
+            android:pathData="M226,190h60M226,216h60M226,242h60"
+            android:strokeWidth="12"
+            android:strokeColor="#FFFFFF"
+            android:strokeLineCap="round" />
+    </group>
+</vector>
