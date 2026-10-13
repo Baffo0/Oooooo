@@ -491,7 +491,7 @@ label > input, label > select, label > textarea, label > .input-with-btn { margi
   font-size: 12px;
   font-weight: 700;
   color: #1f2a33;
-  text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 3px #fff, 0 0 4px #fff;
+  text-shadow: 0 0 2px #fff, 0 0 3px #fff;
   pointer-events: none;
 }
 .show-labels .pin-label { display: block; }

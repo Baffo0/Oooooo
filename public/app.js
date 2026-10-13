@@ -15,6 +15,7 @@ const TYPE_SHORT = { PFP: 'PFP', PFS: 'PFS', PTE: 'PTE', PCN: 'PCN', POZZETTO: '
 const STATUS_LABELS = { da_fare: 'Da fare', in_corso: 'In corso', fatto: 'Fatto', problema: 'Problema' };
 const DEFAULT_VIEW = { center: [42.5, 12.5], zoom: 6 };
 const REFRESH_MS = 30000;
+const API_TIMEOUT_MS = 20000;
 const LOW_ACCURACY_M = 30;
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -23,6 +24,8 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const LOCAL = Boolean(window.CABINE_CONFIG?.local);
 // Funzioni dell'app Android (condividi file, schermo acceso, impostazioni), se presenti.
 const NATIVE = window.CabineApp || null;
+// Telefono economico (poca memoria o pochi processori): la mappa risparmia sul disegno.
+const LOW_END = navigator.deviceMemory <= 3 || navigator.hardwareConcurrency <= 4;
 
 const state = {
   me: null,
@@ -63,7 +66,11 @@ let markersLayer;
 let routeLayer;
 let meMarker;
 let meCircle;
-const markers = new Map();
+const markers = new Map(); // id -> { marker, key }
+const dots = new Map(); // id -> { dot, key }
+let dotsLayer;
+let dotRenderer;
+let dotMode = false;
 
 // ---------------------------------------------------------------------------
 // Utilità
@@ -179,10 +186,18 @@ async function api(path, { method = 'GET', body, headers = {} } = {}) {
       opts.body = JSON.stringify(body);
       opts.headers['Content-Type'] = 'application/json';
     }
-    const res = await fetch(path, opts);
-    status = res.status;
-    etag = res.headers.get('etag');
-    if (status !== 304 && res.headers.get('content-type')?.includes('application/json')) data = await res.json();
+    // Con segnale debolissimo una richiesta può restare appesa per minuti: le letture si
+    // interrompono prima, così l'app passa a "Offline" e riprova più tardi.
+    const ctrl = method === 'GET' ? new AbortController() : null;
+    const timer = ctrl && setTimeout(() => ctrl.abort(), API_TIMEOUT_MS);
+    try {
+      const res = await fetch(path, { ...opts, signal: ctrl?.signal });
+      status = res.status;
+      etag = res.headers.get('etag');
+      if (status !== 304 && res.headers.get('content-type')?.includes('application/json')) data = await res.json();
+    } finally {
+      clearTimeout(timer);
+    }
   }
   if (status === 304) return { notModified: true };
   if (status < 200 || status >= 300) {
@@ -204,31 +219,44 @@ function isNetworkError(err) {
 async function init() {
   if ('serviceWorker' in navigator && !LOCAL) navigator.serviceWorker.register('sw.js').catch(() => {});
   setupModeTexts();
+  const cachedMe = loadJson('cabine.me', null);
+  if (cachedMe) {
+    // Riapertura: la mappa compare subito con l'ultima copia, senza aspettare il server
+    // (con poco segnale fa la differenza). Se l'accesso è scaduto si torna a quella pagina.
+    state.me = cachedMe;
+    startApp();
+    loadConfig();
+    api('/api/me').then(({ data }) => {
+      if (!state.me) return;
+      state.me = data;
+      showMe();
+    }).catch(() => {});
+    return;
+  }
+  await loadConfig();
+  try {
+    state.me = (await api('/api/me')).data;
+    startApp();
+  } catch {
+    showLogin();
+  }
+}
+
+async function loadConfig() {
   try {
     state.config = (await api('/api/config')).data;
   } catch {
     state.config = { passwordRequired: true };
   }
-  try {
-    state.me = (await api('/api/me')).data;
-    startApp();
-  } catch (err) {
-    // Offline ma con dati salvati: mostriamo comunque l'ultima copia.
-    const cachedMe = loadJson('cabine.me', null);
-    if (isNetworkError(err) && cachedMe) {
-      state.me = cachedMe;
-      startApp();
-    } else {
-      showLogin();
-    }
-  }
+  $('#login-password-field').hidden = !state.config.passwordRequired;
 }
 
 function showLogin() {
   state.me = null;
   $('#app').hidden = true;
   $('#login').hidden = false;
-  $('#login-password-field').hidden = !state.config?.passwordRequired;
+  // Finché non si sa se serve, il campo password resta visibile.
+  $('#login-password-field').hidden = state.config ? !state.config.passwordRequired : false;
   const form = $('#login-form');
   form.name.value = load('cabine.lastName') || '';
   (form.name.value ? form.password : form.name).focus();
@@ -253,12 +281,16 @@ $('#login-form').addEventListener('submit', async (e) => {
 });
 
 let started = false;
-function startApp() {
+function showMe() {
   saveJson('cabine.me', state.me);
-  $('#login').hidden = true;
-  $('#app').hidden = false;
   $('#menu-name').textContent = state.me.name;
   $('#btn-menu').textContent = state.me.name.trim().charAt(0).toUpperCase();
+}
+
+function startApp() {
+  showMe();
+  $('#login').hidden = true;
+  $('#app').hidden = false;
   if (!started) {
     started = true;
     $('#btn-list').setAttribute('aria-expanded', String(isDesktop()));
@@ -307,7 +339,7 @@ async function refresh() {
     } else if (!res.notModified) {
       state.cabinets = res.data.cabinets;
       state.etag = res.etag;
-      saveJson('cabine.cache', { cabinets: state.cabinets, etag: state.etag });
+      saveCache();
       renderAll();
     }
     state.offline = false;
@@ -352,13 +384,28 @@ function renderSync() {
 
 function upsertCabinet(cab) {
   state.localChanges += 1;
+  // Un elenco nuovo (non modificato sul posto): così i risultati dei filtri vengono ricalcolati.
   const i = state.cabinets.findIndex((c) => c.id === cab.id);
-  if (i >= 0) state.cabinets[i] = cab;
-  else state.cabinets.push(cab);
+  state.cabinets = i >= 0 ? state.cabinets.map((c, j) => (j === i ? cab : c)) : [...state.cabinets, cab];
   state.etag = null;
-  saveJson('cabine.cache', { cabinets: state.cabinets, etag: null });
+  saveCache();
   renderAll();
 }
+
+// La copia sul telefono si scrive poco dopo, tutta in una volta: con molte cabine
+// trasformarla in testo costa, e non deve rallentare il tocco che l'ha causata.
+let cacheTimer = null;
+function saveCache() {
+  if (cacheTimer === null) cacheTimer = setTimeout(flushCache, 1000);
+}
+function flushCache() {
+  if (cacheTimer === null) return;
+  clearTimeout(cacheTimer);
+  cacheTimer = null;
+  if (state.me) saveJson('cabine.cache', { cabinets: state.cabinets, etag: state.etag });
+}
+document.addEventListener('visibilitychange', () => { if (document.hidden) flushCache(); });
+window.addEventListener('pagehide', flushCache);
 
 function getCabinet(id) {
   return state.cabinets.find((c) => c.id === id) || state.pending.find((c) => c.clientId === id);
@@ -399,6 +446,13 @@ function vectorLayer(labelsOnly) {
   const layer = L.maplibreGL({
     style: labelsOnly ? { version: 8, sources: {}, layers: [] } : OFM_STYLE,
     className: labelsOnly ? 'gl-labels' : 'gl-streets',
+    // Meno pixel da disegnare sugli schermi molto densi (la differenza non si vede),
+    // ancora meno sui telefoni economici.
+    pixelRatio: Math.min(window.devicePixelRatio || 1, LOW_END ? 1.5 : 2),
+    // Scritte subito al loro posto, senza dissolvenza: meno fotogrammi da ridisegnare.
+    fadeDuration: 0,
+    validateStyle: false,
+    refreshExpiredTiles: false,
   });
   layer.on('add', () => {
     const gl = layer.getMaplibreMap();
@@ -475,6 +529,7 @@ function initMap() {
   map.on('moveend', () => {
     const c = map.getCenter();
     saveJson('cabine.view', { center: [c.lat, c.lng], zoom: map.getZoom() });
+    queueMarkers();
   });
   map.on('zoomend', updateLabels);
   updateLabels();
@@ -492,6 +547,10 @@ function initMap() {
     if (!state.pick && !nav.cabId && !isDesktop()) closeDetail();
   });
   routeLayer = L.layerGroup().addTo(map);
+  // Pallini delle cabine viste da lontano: tutti su un'unica tela, leggerissima da muovere.
+  // La tolleranza allarga la zona che risponde al dito.
+  dotRenderer = L.canvas({ padding: 0.3, tolerance: 8 });
+  dotsLayer = L.layerGroup().addTo(map);
   markersLayer = L.layerGroup().addTo(map);
 }
 
@@ -545,26 +604,123 @@ function markerIcon(cab, pending, id) {
   });
 }
 
+// Tutto ciò che si vede di un segnaposto: se non cambia, il segnaposto resta com'è.
+function markerKey(cab, pending, id) {
+  return `${pending ? 'p' : cab.status}|${cab.type}|${cabinetTitle(cab)}|${cab.lat}|${cab.lng}|${id === state.selectedId}`;
+}
+
+const STATUS_COLORS = { da_fare: '#2563eb', in_corso: '#d97706', fatto: '#15803d', problema: '#dc2626' };
+// Oltre questo numero di cabine nello schermo i segnaposto diventano pallini.
+const MAX_PINS = LOW_END ? 150 : 300;
+// Segnaposto pronti anche appena fuori dallo schermo, per i piccoli spostamenti; quelli già
+// disegnati si tolgono solo quando sono ben lontani, così andando avanti e indietro non si
+// ricreano di continuo.
+const PIN_MARGIN = 0.3;
+const PIN_KEEP = 0.6;
+
+function inBounds(b, c) {
+  return c.lat >= b.getSouth() && c.lat <= b.getNorth() && c.lng >= b.getWest() && c.lng <= b.getEast();
+}
+
+function onMarkerTap(id) {
+  if (nav.cabId) return;
+  setFollow(false);
+  openDetail(id);
+}
+
+// Si disegnano solo i segnaposto nella zona visibile e si aggiornano solo quelli cambiati:
+// anche con centinaia di cabine la mappa resta fluida sui telefoni economici.
+// Da lontano, con troppe cabine nello schermo, diventano pallini colorati come su Google Maps.
 function renderMarkers() {
-  markersLayer.clearLayers();
-  markers.clear();
-  const add = (cab, pending) => {
-    const id = pending ? cab.clientId : cab.id;
-    const marker = L.marker([cab.lat, cab.lng], {
-      icon: markerIcon(cab, pending, id),
-      title: cabinetTitle(cab),
-      zIndexOffset: id === state.selectedId ? 1000 : 0,
-    });
-    marker.on('click', () => {
-      if (nav.cabId) return;
-      setFollow(false);
-      openDetail(id);
-    });
+  if (!map) return;
+  const list = filteredCabinets();
+  const view = map.getBounds();
+  let inView = 0;
+  for (const c of list) if (inBounds(view, c)) inView += 1;
+  // Un po' di margine evita che si passi avanti e indietro tra pallini e segnaposto.
+  dotMode = inView > (dotMode ? MAX_PINS * 0.8 : MAX_PINS);
+  const area = view.pad(PIN_MARGIN);
+  const keep = view.pad(PIN_KEEP);
+
+  const wanted = new Map();
+  for (const c of list) {
+    const show = c.id === state.selectedId ||
+      (!dotMode && (inBounds(area, c) || (markers.has(c.id) && inBounds(keep, c))));
+    if (show) wanted.set(c.id, [c, false]);
+  }
+  for (const c of state.pending) wanted.set(c.clientId, [c, true]);
+
+  for (const [id, m] of markers) {
+    if (!wanted.has(id)) {
+      markersLayer.removeLayer(m.marker);
+      markers.delete(id);
+    }
+  }
+  for (const [id, [cab, pending]] of wanted) {
+    const key = markerKey(cab, pending, id);
+    const m = markers.get(id);
+    if (m && m.key === key) continue;
+    const zIndexOffset = id === state.selectedId ? 1000 : 0;
+    if (m) {
+      m.key = key;
+      m.marker.options.title = cabinetTitle(cab);
+      m.marker.setLatLng([cab.lat, cab.lng]).setIcon(markerIcon(cab, pending, id)).setZIndexOffset(zIndexOffset);
+      continue;
+    }
+    const marker = L.marker([cab.lat, cab.lng], { icon: markerIcon(cab, pending, id), title: cabinetTitle(cab), zIndexOffset });
+    marker.on('click', () => onMarkerTap(id));
     marker.addTo(markersLayer);
-    markers.set(id, marker);
-  };
-  for (const cab of filteredCabinets()) add(cab, false);
-  for (const cab of state.pending) add(cab, true);
+    markers.set(id, { marker, key });
+  }
+  renderDots(dotMode ? list : []);
+}
+
+function renderDots(list) {
+  const wanted = new Map();
+  for (const c of list) if (c.id !== state.selectedId) wanted.set(c.id, c);
+  for (const [id, d] of dots) {
+    if (!wanted.has(id)) {
+      dotsLayer.removeLayer(d.dot);
+      dots.delete(id);
+    }
+  }
+  for (const [id, cab] of wanted) {
+    const key = `${cab.status}|${cab.lat}|${cab.lng}`;
+    const d = dots.get(id);
+    if (d && d.key === key) continue;
+    if (d) {
+      d.key = key;
+      d.dot.setLatLng([cab.lat, cab.lng]).setStyle({ fillColor: STATUS_COLORS[cab.status] || STATUS_COLORS.da_fare });
+      continue;
+    }
+    const dot = L.circleMarker([cab.lat, cab.lng], {
+      renderer: dotRenderer,
+      radius: 6,
+      weight: 2,
+      color: '#fff',
+      fillColor: STATUS_COLORS[cab.status] || STATUS_COLORS.da_fare,
+      fillOpacity: 1,
+      // Il tocco su un pallino non deve arrivare alla mappa (che chiuderebbe la scheda).
+      bubblingMouseEvents: false,
+    });
+    dot.on('click', () => onMarkerTap(id));
+    dot.addTo(dotsLayer);
+    dots.set(id, { dot, key });
+  }
+}
+
+// Dopo uno spostamento della mappa; se la mappa si muove di continuo (navigazione, GPS)
+// al massimo qualche aggiornamento al secondo.
+const MARKERS_EVERY_MS = 150;
+let markersTimer = null;
+let markersAt = 0;
+function queueMarkers() {
+  if (markersTimer !== null) return;
+  markersTimer = setTimeout(() => requestAnimationFrame(() => {
+    markersTimer = null;
+    markersAt = performance.now();
+    renderMarkers();
+  }), Math.max(0, markersAt + MARKERS_EVERY_MS - performance.now()));
 }
 
 // ---------------------------------------------------------------------------
@@ -777,17 +933,35 @@ function renderFilterPill() {
   $('#filter-pill').setAttribute('aria-label', `Togli il filtro ${parts.join(', ')}`);
 }
 
+// Testo in cui cercare, preparato una volta sola per cabina (una cabina modificata è un oggetto nuovo).
+const searchTexts = new WeakMap();
+function searchText(c) {
+  let hay = searchTexts.get(c);
+  if (hay === undefined) {
+    hay = [c.code, c.address, c.notes, c.createdBy, TYPE_LABELS[c.type], ...c.log.map((l) => l.text)].join(' ').toLowerCase();
+    searchTexts.set(c, hay);
+  }
+  return hay;
+}
+
+// Lo stesso risultato serve a mappa, elenco e suggerimenti: si ricalcola solo se cambia qualcosa.
+let filterMemo = null;
 function filteredCabinets() {
   const q = $('#search').value.trim().toLowerCase();
   const type = $('#filter-type').value;
   const status = state.filterStatus;
-  return state.cabinets.filter((c) => {
+  const m = filterMemo;
+  if (m && m.cabinets === state.cabinets && m.q === q && m.type === type && m.status === status) return m.list.slice();
+  const words = q ? q.split(/\s+/) : [];
+  const list = state.cabinets.filter((c) => {
     if (type && c.type !== type) return false;
     if (status && c.status !== status) return false;
-    if (!q) return true;
-    const hay = [c.code, c.address, c.notes, c.createdBy, TYPE_LABELS[c.type], ...c.log.map((l) => l.text)].join(' ').toLowerCase();
-    return q.split(/\s+/).every((word) => hay.includes(word));
+    if (!words.length) return true;
+    const hay = searchText(c);
+    return words.every((word) => hay.includes(word));
   });
+  filterMemo = { cabinets: state.cabinets, q, type, status, list };
+  return list.slice();
 }
 
 function sortByDistance(list) {
@@ -802,7 +976,36 @@ function sortByDistance(list) {
   return dist;
 }
 
+function listVisible() {
+  const panel = $('#list-panel');
+  return isDesktop() ? !panel.classList.contains('closed') : panel.classList.contains('open');
+}
+
+function listItemHtml(c, dist) {
+  return `
+    <li><button class="item" data-id="${esc(c.id)}">
+      <span class="badge st-${esc(c.status)}">${esc(TYPE_SHORT[c.type])}</span>
+      <span class="item-body">
+        <span class="item-title">${esc(cabinetTitle(c))}</span><br>
+        <span class="item-sub">${esc(c.address || `${fmtCoord(c.lat)}, ${fmtCoord(c.lng)}`)}</span><br>
+        <span class="chip st-${esc(c.status)}">${esc(STATUS_LABELS[c.status])}</span>
+      </span>
+      ${dist ? `<span class="item-dist">${fmtDistance(dist.get(c))}</span>` : ''}
+    </button></li>`;
+}
+
+// L'elenco si prepara solo quando è aperto, e a pagine: le cabine più lontane si aggiungono
+// scorrendo. Con centinaia di cabine il telefono non costruisce migliaia di righe mai viste.
+const LIST_PAGE = 50;
+let listDirty = true;
+const listRest = { items: [], dist: null, filter: null };
+
 function renderList() {
+  if (!listVisible()) {
+    listDirty = true;
+    return;
+  }
+  listDirty = false;
   const list = filteredCabinets();
   const dist = sortByDistance(list);
   const pos = state.position;
@@ -819,16 +1022,18 @@ function renderList() {
       </span>
     </button></li>`).join('');
 
-  $('#list').innerHTML = pendingItems + list.map((c) => `
-    <li><button class="item" data-id="${esc(c.id)}">
-      <span class="badge st-${esc(c.status)}">${esc(TYPE_SHORT[c.type])}</span>
-      <span class="item-body">
-        <span class="item-title">${esc(cabinetTitle(c))}</span><br>
-        <span class="item-sub">${esc(c.address || `${fmtCoord(c.lat)}, ${fmtCoord(c.lng)}`)}</span><br>
-        <span class="chip st-${esc(c.status)}">${esc(STATUS_LABELS[c.status])}</span>
-      </span>
-      ${pos ? `<span class="item-dist">${fmtDistance(dist.get(c))}</span>` : ''}
-    </button></li>`).join('');
+  // Quando l'elenco si aggiorna resta lungo almeno quanto lo si era già fatto scorrere;
+  // con una ricerca o un filtro nuovi si riparte dall'inizio.
+  const el = $('#list');
+  const filter = [$('#search').value.trim().toLowerCase(), $('#filter-type').value, state.filterStatus].join('|');
+  let shown = LIST_PAGE;
+  if (filter === listRest.filter) shown = Math.max(LIST_PAGE, el.children.length - state.pending.length);
+  else el.scrollTop = 0;
+  listRest.filter = filter;
+  listRest.items = list.slice(shown);
+  listRest.dist = pos ? dist : null;
+  el.innerHTML = pendingItems + list.slice(0, shown).map((c) => listItemHtml(c, listRest.dist)).join('');
+  fillList();
 
   const empty = $('#list-empty');
   const q = $('#search').value.trim();
@@ -842,6 +1047,18 @@ function renderList() {
     $('#btn-place-search')?.addEventListener('click', () => searchPlace(q));
   }
 }
+
+function appendListPage() {
+  const page = listRest.items.splice(0, LIST_PAGE);
+  if (page.length) $('#list').insertAdjacentHTML('beforeend', page.map((c) => listItemHtml(c, listRest.dist)).join(''));
+}
+
+// Aggiunge righe finché l'elenco non arriva a poco oltre il fondo dello schermo.
+function fillList() {
+  const el = $('#list');
+  while (listRest.items.length && el.scrollTop + el.clientHeight > el.scrollHeight - 600) appendListPage();
+}
+$('#list').addEventListener('scroll', fillList, { passive: true });
 
 $('#list').addEventListener('click', (e) => {
   const btn = e.target.closest('.item');
@@ -873,14 +1090,22 @@ function toggleList(force) {
     // Su telefono l'elenco occupa lo schermo: la scheda aperta resterebbe sopra.
     if (open) closeDetail();
   }
+  if (open && listDirty) renderList();
   $('#btn-list').setAttribute('aria-expanded', String(open));
 }
 $('#btn-list').addEventListener('click', () => toggleList());
+// Ruotando un tablet si può passare dalla vista telefono a quella computer e viceversa.
+window.matchMedia('(min-width: 900px)').addEventListener('change', () => {
+  if (listDirty) renderList();
+  renderFilterPill();
+});
 
 // Barra di ricerca con suggerimenti: cabine corrispondenti e ricerca di un indirizzo.
 const searchInput = $('#search');
+let searchTimer = null;
 
 function clearSearch() {
+  clearTimeout(searchTimer);
   searchInput.value = '';
   $('#search-clear').hidden = true;
   $('#suggestions').hidden = true;
@@ -909,9 +1134,12 @@ function renderSuggestions() {
   box.hidden = false;
 }
 
+// Mentre si scrive si aggiornano subito solo i suggerimenti; mappa ed elenco quando ci si ferma.
 searchInput.addEventListener('input', () => {
   $('#search-clear').hidden = !searchInput.value;
-  renderAll();
+  renderSuggestions();
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(renderAll, 300);
 });
 searchInput.addEventListener('focus', renderSuggestions);
 searchInput.addEventListener('blur', () => setTimeout(() => { $('#suggestions').hidden = true; }, 150));
@@ -1156,7 +1384,7 @@ async function deleteCabinet(cab) {
     state.localChanges += 1;
     state.cabinets = state.cabinets.filter((c) => c.id !== cab.id);
     state.etag = null;
-    saveJson('cabine.cache', { cabinets: state.cabinets, etag: null });
+    saveCache();
     closeDetail();
     renderAll();
     toast('Cabina eliminata');
@@ -1778,6 +2006,8 @@ $('#menu-dialog').addEventListener('close', async () => {
     NATIVE?.openSettings();
   } else if (choice === 'logout') {
     try { await api('/api/logout', { method: 'POST' }); } catch { /* offline */ }
+    clearTimeout(cacheTimer);
+    cacheTimer = null;
     store('cabine.cache', null);
     store('cabine.me', null);
     state.cabinets = [];

@@ -3,9 +3,11 @@
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const http = require('node:http');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
+const zlib = require('node:zlib');
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cabine-test-'));
 // Una cabina salvata da una versione precedente, senza foto né diario.
@@ -205,4 +207,53 @@ test('un indirizzo malformato non fa cadere il server', async () => {
 test('un cookie malformato viene ignorato', async () => {
   const res = await fetch(base + '/api/me', { headers: { cookie: `altro=%E0%A4%A; ${cookie}` } });
   assert.equal(res.status, 200);
+});
+
+// Richiesta senza decompressione automatica, per vedere i byte che viaggiano davvero.
+function rawGet(url, headers = {}) {
+  return new Promise((resolve, reject) => {
+    http.get(base + url, { headers }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+    }).on('error', reject);
+  });
+}
+
+test('i file dell\'app viaggiano compressi e non si riscaricano se non sono cambiati', async () => {
+  const plain = await rawGet('/app.js');
+  assert.equal(plain.status, 200);
+  assert.equal(plain.headers['content-encoding'], undefined);
+  assert.ok(plain.headers.etag);
+
+  const gz = await rawGet('/app.js', { 'accept-encoding': 'gzip, deflate, br' });
+  assert.equal(gz.headers['content-encoding'], 'gzip');
+  assert.equal(gz.headers.vary, 'Accept-Encoding');
+  assert.ok(gz.body.length < plain.body.length / 2);
+  assert.deepEqual(zlib.gunzipSync(gz.body), plain.body);
+
+  const same = await rawGet('/app.js', { 'if-none-match': plain.headers.etag });
+  assert.equal(same.status, 304);
+  assert.equal(same.body.length, 0);
+  const changed = await rawGet('/app.js', { 'if-none-match': 'W/"vecchio"' });
+  assert.equal(changed.status, 200);
+
+  // Le immagini sono già compresse.
+  const png = await rawGet('/icons/icon-192.png', { 'accept-encoding': 'gzip' });
+  assert.equal(png.status, 200);
+  assert.equal(png.headers['content-encoding'], undefined);
+});
+
+test('l\'elenco delle cabine viaggia compresso', async () => {
+  for (let i = 0; i < 4; i++) {
+    const res = await call('POST', '/api/cabinets', { body: { code: `PTE compresso ${i}`, type: 'PTE', status: 'da_fare', lat: 45.1, lng: 9.1, notes: 'Nota lunga '.repeat(30) } });
+    assert.equal(res.status, 201);
+  }
+  const res = await rawGet('/api/cabinets', { cookie, 'accept-encoding': 'gzip' });
+  assert.equal(res.status, 200);
+  assert.equal(res.headers['content-encoding'], 'gzip');
+  const data = JSON.parse(zlib.gunzipSync(res.body));
+  assert.ok(data.cabinets.some((c) => c.code === 'PTE compresso 3'));
+  const notModified = await rawGet('/api/cabinets', { cookie, 'accept-encoding': 'gzip', 'if-none-match': res.headers.etag });
+  assert.equal(notModified.status, 304);
 });

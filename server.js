@@ -8,6 +8,7 @@ const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const zlib = require('node:zlib');
 const Core = require('./public/core.js');
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -158,14 +159,35 @@ function recordLoginFailure(ip) {
 // Stesso tipo di errore delle regole condivise: entrambi diventano una risposta HTTP.
 const HttpError = Core.CoreError;
 
+// Testi compressi con gzip: l'elenco delle cabine e i file dell'app pesano circa un quarto,
+// e su una connessione lenta in strada si sente.
+const GZIP_MIN_BYTES = 1024;
+
+function acceptsGzip(req) {
+  return /\bgzip\b/.test((req && req.headers['accept-encoding']) || '');
+}
+
 function sendJson(res, status, body, headers = {}) {
-  const data = JSON.stringify(body);
-  res.writeHead(status, {
+  const data = Buffer.from(JSON.stringify(body));
+  const head = {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
     ...headers,
+  };
+  if (data.length < GZIP_MIN_BYTES || !acceptsGzip(res.req)) {
+    res.writeHead(status, head);
+    res.end(data);
+    return;
+  }
+  zlib.gzip(data, (err, gz) => {
+    if (err) {
+      res.writeHead(status, head);
+      res.end(data);
+      return;
+    }
+    res.writeHead(status, { ...head, 'Content-Encoding': 'gzip', Vary: 'Accept-Encoding' });
+    res.end(gz);
   });
-  res.end(data);
 }
 
 function readBody(req, limit) {
@@ -346,6 +368,11 @@ const MIME = {
   '.txt': 'text/plain; charset=utf-8',
 };
 
+const COMPRESSIBLE = new Set(['.html', '.js', '.css', '.json', '.webmanifest', '.svg', '.txt']);
+// I file dell'app (già compressi) restano in memoria: sono pochi e piccoli.
+const staticCache = new Map();
+const gzip = (data, opts) => new Promise((resolve, reject) => zlib.gzip(data, opts, (err, out) => (err ? reject(err) : resolve(out))));
+
 async function serveStatic(req, res, url) {
   if (req.method !== 'GET' && req.method !== 'HEAD') throw new HttpError(405, 'Metodo non consentito');
   let rel;
@@ -357,18 +384,47 @@ async function serveStatic(req, res, url) {
   if (rel.endsWith('/')) rel += 'index.html';
   const file = path.join(PUBLIC_DIR, path.normalize(rel));
   if (!file.startsWith(PUBLIC_DIR + path.sep)) throw new HttpError(404, 'Non trovato');
-  let data;
+  let stat;
   try {
-    data = await fsp.readFile(file);
+    stat = await fsp.stat(file);
   } catch {
     throw new HttpError(404, 'Non trovato');
   }
+  if (!stat.isFile()) throw new HttpError(404, 'Non trovato');
   const ext = path.extname(file);
-  res.writeHead(200, {
-    'Content-Type': MIME[ext] || 'application/octet-stream',
+  // Il browser chiede "è cambiato?" e, se no, riceve solo una risposta vuota (304).
+  const etag = `W/"${stat.size.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}"`;
+  const headers = {
     'Cache-Control': rel.startsWith('/vendor/') ? 'public, max-age=604800' : 'no-cache',
+    ETag: etag,
+    Vary: 'Accept-Encoding',
+  };
+  const ifNoneMatch = req.headers['if-none-match'];
+  if (ifNoneMatch && ifNoneMatch.split(',').some((t) => t.trim() === etag)) {
+    res.writeHead(304, headers);
+    res.end();
+    return;
+  }
+  let entry = staticCache.get(file);
+  if (!entry || entry.etag !== etag) {
+    let data;
+    try {
+      data = await fsp.readFile(file);
+    } catch {
+      throw new HttpError(404, 'Non trovato');
+    }
+    const gz = COMPRESSIBLE.has(ext) && data.length >= GZIP_MIN_BYTES ? await gzip(data, { level: 9 }) : null;
+    entry = { etag, data, gz };
+    staticCache.set(file, entry);
+  }
+  const body = entry.gz && acceptsGzip(req) ? entry.gz : entry.data;
+  res.writeHead(200, {
+    ...headers,
+    'Content-Type': MIME[ext] || 'application/octet-stream',
+    'Content-Length': body.length,
+    ...(body === entry.gz ? { 'Content-Encoding': 'gzip' } : {}),
   });
-  res.end(req.method === 'HEAD' ? undefined : data);
+  res.end(req.method === 'HEAD' ? undefined : body);
 }
 
 const SECURITY_HEADERS = {
