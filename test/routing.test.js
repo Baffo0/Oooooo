@@ -69,3 +69,28 @@ test('riconosce quando si esce dal percorso', () => {
   const away = Routing.progress(route, { lat: 45.0009, lng: 9.002 });
   assert.ok(away.offRoute > 100, `offRoute ${away.offRoute}`);
 });
+
+test('errori del servizio percorsi spiegati in italiano', async (t) => {
+  const from = { lat: 45, lng: 9 };
+  const to = { lat: 45.01, lng: 9.01 };
+  const reply = (status, body) => async () => new Response(body, { status, headers: { 'content-type': 'application/json' } });
+  const realFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = realFetch; });
+
+  globalThis.fetch = reply(400, JSON.stringify({ code: 'NoRoute', message: 'Impossible route' }));
+  await assert.rejects(Routing.fetchRoute('car', from, to), /Nessun percorso trovato/);
+
+  globalThis.fetch = reply(502, '<html>Bad gateway</html>');
+  await assert.rejects(Routing.fetchRoute('foot', from, to), /non disponibile \(errore 502\)/);
+
+  globalThis.fetch = async () => { throw new TypeError('Failed to fetch'); };
+  await assert.rejects(Routing.fetchRoute('car', from, to), /non raggiungibile/);
+
+  const ctrl = new AbortController();
+  globalThis.fetch = (url, opts) => new Promise((resolve, reject) => {
+    opts.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+  });
+  const pending = Routing.fetchRoute('car', from, to, ctrl.signal);
+  ctrl.abort();
+  await assert.rejects(pending, { name: 'AbortError' });
+});

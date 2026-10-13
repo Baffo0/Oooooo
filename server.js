@@ -33,8 +33,18 @@ fs.mkdirSync(PHOTOS_DIR, { recursive: true });
 
 let db = { version: 1, cabinets: [] };
 if (fs.existsSync(DB_FILE)) {
-  db = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+  try {
+    db = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+  } catch (err) {
+    console.error(`Il file ${DB_FILE} è danneggiato: ripristinalo da un backup prima di avviare il server.`);
+    throw err;
+  }
   if (!Array.isArray(db.cabinets)) db.cabinets = [];
+  // Dati scritti a mano o da versioni precedenti: garantiamo i campi che il codice si aspetta.
+  for (const cab of db.cabinets) {
+    if (!Array.isArray(cab.photos)) cab.photos = [];
+    if (!Array.isArray(cab.log)) cab.log = [];
+  }
 }
 let etag = computeEtag();
 
@@ -42,16 +52,22 @@ function computeEtag() {
   return '"' + crypto.createHash('sha1').update(JSON.stringify(db.cabinets)).digest('base64url') + '"';
 }
 
+// Le scritture sono in coda, così un salvataggio non sovrascrive mai uno più recente.
+// Se il disco fallisce (es. spazio esaurito) la richiesta risponde con un errore
+// invece di far credere che i dati siano stati salvati.
 let writeChain = Promise.resolve();
 function persist() {
   etag = computeEtag();
   const snapshot = JSON.stringify(db, null, 1);
-  writeChain = writeChain.then(async () => {
+  const write = writeChain.then(async () => {
     const tmp = DB_FILE + '.tmp';
     await fsp.writeFile(tmp, snapshot);
     await fsp.rename(tmp, DB_FILE);
-  }).catch((err) => console.error('Errore salvataggio dati:', err));
-  return writeChain;
+  });
+  writeChain = write.catch((err) => console.error('Errore salvataggio dati:', err));
+  return write.catch(() => {
+    throw new HttpError(500, 'Salvataggio sul server non riuscito, riprova');
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -106,7 +122,12 @@ function parseCookies(req) {
   const out = {};
   for (const part of (req.headers.cookie || '').split(';')) {
     const i = part.indexOf('=');
-    if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+    if (i <= 0) continue;
+    try {
+      out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+    } catch {
+      /* cookie di altri siti o malformato: lo ignoriamo */
+    }
   }
   return out;
 }
@@ -475,8 +496,14 @@ function sameOrigin(req) {
 
 const server = http.createServer(async (req, res) => {
   for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
-  const url = new URL(req.url, 'http://localhost');
   try {
+    // Dentro il try: un indirizzo malformato non deve far cadere il server.
+    let url;
+    try {
+      url = new URL(req.url, 'http://localhost');
+    } catch {
+      throw new HttpError(400, 'Indirizzo non valido');
+    }
     if (url.pathname.startsWith('/api/')) {
       // Protezione CSRF: le richieste che modificano dati devono arrivare dalla stessa origine.
       if (req.method !== 'GET' && req.headers.origin && !sameOrigin(req)) {
@@ -487,9 +514,10 @@ const server = http.createServer(async (req, res) => {
       await serveStatic(req, res, url);
     }
   } catch (err) {
-    const status = err instanceof HttpError ? err.status : 500;
-    if (status === 500) console.error(err);
-    if (!res.headersSent) sendJson(res, status, { error: status === 500 ? 'Errore interno del server' : err.message });
+    const known = err instanceof HttpError;
+    const status = known ? err.status : 500;
+    if (!known) console.error(err);
+    if (!res.headersSent) sendJson(res, status, { error: known ? err.message : 'Errore interno del server' });
     else res.end();
   }
 });

@@ -37,6 +37,7 @@ const state = {
   locateSettled: false,
   listPos: null,
   fitted: Boolean(loadJson('cabine.view', null)),
+  localChanges: 0,
 };
 
 // Percorso in corso verso una cabina (anteprima o navigazione).
@@ -73,10 +74,25 @@ function loadJson(key, fallback) {
 }
 
 function saveJson(key, value) {
+  store(key, JSON.stringify(value));
+}
+
+// localStorage può lanciare eccezioni (spazio esaurito, navigazione privata):
+// le preferenze sono comode ma mai indispensabili.
+function store(key, value) {
   try {
-    localStorage.setItem(key, JSON.stringify(value));
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
   } catch {
-    /* spazio esaurito o archiviazione non disponibile */
+    /* archiviazione non disponibile */
+  }
+}
+
+function load(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
   }
 }
 
@@ -199,7 +215,7 @@ function showLogin() {
   $('#login').hidden = false;
   $('#login-password-field').hidden = !state.config?.passwordRequired;
   const form = $('#login-form');
-  form.name.value = localStorage.getItem('cabine.lastName') || '';
+  form.name.value = load('cabine.lastName') || '';
   (form.name.value ? form.password : form.name).focus();
 }
 
@@ -213,7 +229,7 @@ $('#login-form').addEventListener('submit', async (e) => {
       body: { name: form.name.value, password: form.password.value },
     });
     form.password.value = '';
-    localStorage.setItem('cabine.lastName', data.name);
+    store('cabine.lastName', data.name);
     state.me = data;
     startApp();
   } catch (err) {
@@ -263,9 +279,17 @@ async function refresh() {
   if (refreshing || !state.me) return;
   refreshing = true;
   try {
-    await flushPending();
+    // Se il server rifiuta temporaneamente una cabina in coda, la riproviamo dopo
+    // ma intanto aggiorniamo comunque le altre.
+    await flushPending().catch((err) => {
+      if (isNetworkError(err) || err.status === 401) throw err;
+    });
+    const changesBefore = state.localChanges;
     const res = await api('/api/cabinets', { headers: state.etag ? { 'If-None-Match': state.etag } : {} });
-    if (!res.notModified) {
+    if (state.localChanges !== changesBefore) {
+      // Nel frattempo abbiamo salvato qualcosa: questa copia è già vecchia, ne chiediamo una nuova.
+      setTimeout(refresh, 0);
+    } else if (!res.notModified) {
       state.cabinets = res.data.cabinets;
       state.etag = res.etag;
       saveJson('cabine.cache', { cabinets: state.cabinets, etag: state.etag });
@@ -290,7 +314,8 @@ async function flushPending() {
       state.pending.shift();
       upsertCabinet(data);
     } catch (err) {
-      if (isNetworkError(err)) throw err;
+      // Rete assente, sessione scaduta o server in errore: si riprova più tardi.
+      if (isNetworkError(err) || err.status !== 400) throw err;
       toast(`Cabina "${cabinetTitle(item)}" non salvata: ${err.message}`, true, 6000);
       state.pending.shift();
     }
@@ -311,6 +336,7 @@ function renderSync() {
 }
 
 function upsertCabinet(cab) {
+  state.localChanges += 1;
   const i = state.cabinets.findIndex((c) => c.id === cab.id);
   if (i >= 0) state.cabinets[i] = cab;
   else state.cabinets.push(cab);
@@ -360,7 +386,7 @@ let baseLayer;
 function initMap() {
   const saved = loadJson('cabine.view', null);
   map = L.map('map', { zoomControl: false, maxZoom: 20 });
-  setLayer(LAYERS[localStorage.getItem('cabine.layer')] ? localStorage.getItem('cabine.layer') : 'strade');
+  setLayer(LAYERS[load('cabine.layer')] ? load('cabine.layer') : 'strade');
   if (saved) map.setView(saved.center, saved.zoom);
   else map.setView(DEFAULT_VIEW.center, DEFAULT_VIEW.zoom);
   // Registrato dopo setView, così la vista predefinita non viene salvata come scelta dell'utente.
@@ -390,7 +416,7 @@ function initMap() {
 function setLayer(name) {
   if (baseLayer) map.removeLayer(baseLayer);
   baseLayer = LAYERS[name]().addTo(map);
-  localStorage.setItem('cabine.layer', name);
+  store('cabine.layer', name);
   document.querySelectorAll('#layers-menu [data-layer]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.layer === name)));
 }
 
@@ -520,7 +546,7 @@ function updateMyPosition(pos) {
   // Direzione di marcia (disponibile quando ci si muove).
   const cone = meMarker.getElement()?.querySelector('.me-cone');
   if (cone) {
-    const moving = Number.isFinite(c.heading) && (c.speed === null || c.speed > 0.5);
+    const moving = Number.isFinite(c.heading) && c.heading >= 0 && (c.speed === null || c.speed > 0.5);
     cone.hidden = !moving;
     if (moving) cone.style.transform = `rotate(${c.heading}deg)`;
   }
@@ -554,19 +580,59 @@ function getPosition() {
 }
 
 // Posizione attuale per salvare una cabina: l'ultima lettura del GPS se è di pochi
-// secondi fa, altrimenti la prima nuova lettura disponibile.
+// secondi fa, altrimenti la prima nuova lettura (dal GPS già attivo o da una
+// richiesta apposita). Si segnala un errore solo se falliscono entrambe.
 function freshPosition() {
   if (state.position && Date.now() - state.positionAt < 10000) return Promise.resolve(state.position);
+  if (watchId === null) return getPosition();
   return new Promise((resolve, reject) => {
     let done = false;
-    const finish = (fn) => (value) => {
+    let failures = 0;
+    const ok = (p) => {
       if (done) return;
       done = true;
-      fn(value);
+      resolve(p);
     };
-    if (watchId !== null) positionWaiters.push(finish(resolve));
-    getPosition().then(finish(resolve), finish(reject));
+    const fail = (err) => {
+      failures += 1;
+      if (done || failures < 2) return;
+      done = true;
+      reject(err);
+    };
+    nextPosition(20000).then((p) => (p ? ok(p) : fail(new Error('Tempo scaduto per il GPS, riprova'))));
+    getPosition().then(ok, fail);
   });
+}
+
+// Il GPS appena acceso può sbagliare di decine di metri: per salvare una cabina
+// aspettiamo fino a qualche secondo una lettura precisa, tenendo comunque la migliore.
+const GOOD_ACCURACY_M = 15;
+
+function nextPosition(ms) {
+  return new Promise((resolve) => {
+    const onFix = (p) => {
+      clearTimeout(timer);
+      resolve(p);
+    };
+    const timer = setTimeout(() => {
+      const i = positionWaiters.indexOf(onFix);
+      if (i >= 0) positionWaiters.splice(i, 1);
+      resolve(null);
+    }, ms);
+    positionWaiters.push(onFix);
+  });
+}
+
+async function accuratePosition() {
+  let best = await freshPosition();
+  const deadline = Date.now() + 8000;
+  while (best.accuracy > GOOD_ACCURACY_M && watchId !== null && Date.now() < deadline) {
+    toast(`Miglioro la precisione del GPS… ±${Math.round(best.accuracy)} m`, false, 9000);
+    const next = await nextPosition(deadline - Date.now());
+    if (!next) break;
+    if (next.accuracy < best.accuracy) best = next;
+  }
+  return best;
 }
 
 function setFollow(on) {
@@ -683,7 +749,8 @@ $('#list').addEventListener('click', (e) => {
 
 function focusCabinet(id) {
   const cab = getCabinet(id);
-  if (!cab) return;
+  if (!cab || nav.active || state.pick) return;
+  if (nav.cabId) closeRoute();
   if (!isDesktop()) toggleList(false);
   setFollow(false);
   state.userMovedMap = true;
@@ -701,6 +768,8 @@ function toggleList(force) {
   } else {
     open = force ?? !panel.classList.contains('open');
     panel.classList.toggle('open', open);
+    // Su telefono l'elenco occupa lo schermo: la scheda aperta resterebbe sopra.
+    if (open) closeDetail();
   }
   $('#btn-list').setAttribute('aria-expanded', String(open));
 }
@@ -747,7 +816,7 @@ searchInput.addEventListener('blur', () => setTimeout(() => { $('#suggestions').
 searchInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     e.preventDefault();
-    $('#suggestions .suggestion')?.click();
+    if (!$('#suggestions').hidden) $('#suggestions .suggestion')?.click();
   } else if (e.key === 'Escape') {
     searchInput.blur();
   }
@@ -794,7 +863,10 @@ async function searchPlace(q) {
       openForm({ mode: 'create', lat, lng, accuracy: null });
     });
     map.setView([lat, lng], 17);
-    placeMarker.bindPopup(popup).openPopup();
+    const marker = placeMarker;
+    marker.bindPopup(popup).openPopup();
+    // Il segnaposto dell'indirizzo sparisce insieme al suo fumetto (tocco sulla mappa).
+    marker.on('popupclose', () => marker.remove());
   } catch {
     toast('Ricerca indirizzi non disponibile', true);
   }
@@ -960,8 +1032,10 @@ async function deleteCabinet(cab) {
   if (!confirm(`Eliminare definitivamente "${cabinetTitle(cab)}" per tutta la squadra?`)) return;
   try {
     await api(`/api/cabinets/${cab.id}`, { method: 'DELETE' });
+    state.localChanges += 1;
     state.cabinets = state.cabinets.filter((c) => c.id !== cab.id);
     state.etag = null;
+    saveJson('cabine.cache', { cabinets: state.cabinets, etag: null });
     closeDetail();
     renderAll();
     toast('Cabina eliminata');
@@ -1028,7 +1102,7 @@ $('#add-dialog').addEventListener('close', async () => {
   if (choice === 'gps') {
     toast('Rilevamento posizione GPS…', false, 20000);
     try {
-      const pos = await freshPosition();
+      const pos = await accuratePosition();
       $('#toast').hidden = true;
       map.setView([pos.lat, pos.lng], Math.max(map.getZoom(), 18));
       openForm({ mode: 'create', lat: pos.lat, lng: pos.lng, accuracy: Math.round(pos.accuracy) });
@@ -1052,6 +1126,9 @@ function pickLocation(text) {
     $('#pick-bar').hidden = false;
     $('#fabs').hidden = true;
     $('#sheet').hidden = true;
+    $('#top').hidden = true;
+    closeLayersMenu();
+    if (!isDesktop()) toggleList(false);
   });
 }
 
@@ -1061,6 +1138,7 @@ function endPick(result) {
   $('#crosshair').hidden = true;
   $('#pick-bar').hidden = true;
   $('#fabs').hidden = false;
+  $('#top').hidden = false;
   if (state.selectedId) renderDetail();
   resolve?.(result);
 }
@@ -1105,7 +1183,7 @@ function openForm(opts) {
     form.address.value = cab.address;
     form.notes.value = cab.notes;
   } else {
-    form.type.value = localStorage.getItem('cabine.lastType') || 'PFP';
+    form.type.value = load('cabine.lastType') || 'PFP';
     form.status.value = 'da_fare';
   }
   dialog.showModal();
@@ -1155,7 +1233,7 @@ $('#cabinet-form').addEventListener('submit', async (e) => {
     address: form.address.value,
     notes: form.notes.value,
   };
-  localStorage.setItem('cabine.lastType', fields.type);
+  store('cabine.lastType', fields.type);
   const submit = form.querySelector('[type=submit]');
   submit.disabled = true;
   try {
@@ -1230,7 +1308,7 @@ async function openRoute(id) {
   const cab = getCabinet(id);
   if (!cab) return;
   nav.cabId = id;
-  nav.mode = localStorage.getItem('cabine.mode') === 'foot' ? 'foot' : 'car';
+  nav.mode = load('cabine.mode') === 'foot' ? 'foot' : 'car';
   nav.routes = {};
   nav.errors = {};
   setFollow(false);
@@ -1274,8 +1352,14 @@ async function computeRoutes(from, modes) {
       delete nav.errors[mode];
     } catch (err) {
       if (err.name === 'AbortError') return;
-      nav.routes[mode] = null;
-      nav.errors[mode] = navigator.onLine === false ? 'Sei offline: impossibile calcolare il percorso' : err.message;
+      const message = navigator.onLine === false ? 'Sei offline: impossibile calcolare il percorso' : err.message;
+      if (nav.active && nav.routes[mode]) {
+        // In navigazione meglio il percorso di prima che nessun percorso.
+        toast(`Ricalcolo non riuscito: ${message}`, true);
+      } else {
+        nav.routes[mode] = null;
+        nav.errors[mode] = message;
+      }
     }
     if (ctrl.signal.aborted || !nav.cabId) return;
     if (nav.active) renderNav();
@@ -1372,7 +1456,7 @@ function fitRoute() {
 
 document.querySelectorAll('.mode').forEach((b) => b.addEventListener('click', () => {
   nav.mode = b.dataset.mode;
-  localStorage.setItem('cabine.mode', nav.mode);
+  store('cabine.mode', nav.mode);
   renderRoute();
   drawRoute();
   fitRoute();
@@ -1426,12 +1510,14 @@ function onNavPosition() {
   const cab = getCabinet(nav.cabId);
   if (!r || !cab) return;
   const pos = state.position;
-  if (distance(pos, cab) <= ARRIVE_M) {
+  const p = Routing.progress(r, pos);
+  const toCab = distance(pos, cab);
+  // Arrivati: vicini alla cabina, oppure a fine percorso quando il GPS è poco preciso.
+  if (toCab <= ARRIVE_M || (p.remaining < 20 && toCab <= Math.min(Math.max(ARRIVE_M, pos.accuracy || 0), 60))) {
     toast(`Sei arrivato: ${cabinetTitle(cab)}`, false, 5000);
     closeRoute();
     return;
   }
-  const p = Routing.progress(r, pos);
   // Fuori strada: ricalcola il percorso dalla posizione attuale (al massimo ogni 10 secondi).
   const limit = Math.max(nav.mode === 'car' ? 50 : 30, pos.accuracy || 0);
   if (p.offRoute > limit && !nav.rerouting && Date.now() - nav.lastReroute > REROUTE_EVERY_MS) {
@@ -1451,7 +1537,7 @@ function renderNav(p) {
   const r = nav.routes[nav.mode];
   if (!r) return;
   if (!p) p = state.position ? Routing.progress(r, state.position) : Routing.progress(r, r.coords[0]);
-  const next = p.next;
+  const next = p.next || { icon: 'flag', text: `Prosegui verso ${cabinetTitle(getCabinet(nav.cabId) || {})}` };
   $('#nav-banner').innerHTML = nav.rerouting
     ? '<span class="spinner"></span><div class="nav-text">Ricalcolo del percorso…</div>'
     : `${maneuverSvg(next.icon)}<div><div class="nav-dist">${fmtDistance(p.toNext)}</div><div class="nav-text">${esc(next.text)}</div></div>`;
@@ -1499,8 +1585,8 @@ $('#menu-dialog').addEventListener('close', async () => {
   $('#menu-dialog').returnValue = '';
   if (choice === 'logout') {
     try { await api('/api/logout', { method: 'POST' }); } catch { /* offline */ }
-    localStorage.removeItem('cabine.cache');
-    localStorage.removeItem('cabine.me');
+    store('cabine.cache', null);
+    store('cabine.me', null);
     state.cabinets = [];
     state.etag = null;
     closeDetail();
@@ -1536,9 +1622,11 @@ function exportCsv() {
     const s = String(v ?? '');
     return /[";\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
+  // Un testo che inizia con = + - @ verrebbe eseguito da Excel come formula.
+  const text = (v) => (/^[=+\-@\t\r]/.test(v || '') ? `'${v}` : v);
   const rows = state.cabinets.map((c) => [
-    c.code, TYPE_LABELS[c.type], STATUS_LABELS[c.status], fmtCoord(c.lat), fmtCoord(c.lng), c.address, c.notes,
-    c.createdBy, fmtDate(c.createdAt), c.updatedBy, fmtDate(c.updatedAt), `https://www.google.com/maps?q=${c.lat},${c.lng}`,
+    text(c.code), TYPE_LABELS[c.type], STATUS_LABELS[c.status], fmtCoord(c.lat), fmtCoord(c.lng), text(c.address), text(c.notes),
+    text(c.createdBy), fmtDate(c.createdAt), text(c.updatedBy), fmtDate(c.updatedAt), `https://www.google.com/maps?q=${c.lat},${c.lng}`,
   ].map(cell).join(';'));
   // BOM e punto e virgola: così Excel in italiano apre il file correttamente.
   download(exportName('csv'), '﻿' + [cols.join(';'), ...rows].join('\r\n'), 'text/csv;charset=utf-8');

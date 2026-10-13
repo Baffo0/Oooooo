@@ -16,19 +16,46 @@
     return 2 * R * Math.asin(Math.sqrt(h));
   }
 
+  const TIMEOUT_MS = 15000;
+  const OSRM_ERRORS = {
+    NoRoute: 'Nessun percorso trovato verso la cabina',
+    NoSegment: 'Nessuna strada vicino alla partenza o alla cabina',
+  };
+
   async function fetchRoute(mode, from, to, signal) {
     const coords = `${from.lng.toFixed(6)},${from.lat.toFixed(6)};${to.lng.toFixed(6)},${to.lat.toFixed(6)}`;
     const url = `${ROUTER}/${PROFILES[mode]}/route/v1/driving/${coords}?overview=full&geometries=geojson&steps=true`;
+    // Annulla se lo chiede l'app (nuovo calcolo) o se il servizio non risponde in tempo.
+    const ctrl = new AbortController();
+    const onAbort = () => ctrl.abort();
+    if (signal) {
+      if (signal.aborted) ctrl.abort();
+      else signal.addEventListener('abort', onAbort, { once: true });
+    }
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      ctrl.abort();
+    }, TIMEOUT_MS);
     let res;
+    let data;
     try {
-      res = await fetch(url, { signal });
+      res = await fetch(url, { signal: ctrl.signal });
+      data = await res.json().catch(() => null);
     } catch (err) {
+      if (timedOut) throw new Error('Il servizio percorsi non risponde, riprova');
       if (err.name === 'AbortError') throw err;
       throw new Error('Servizio percorsi non raggiungibile');
+    } finally {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onAbort);
     }
-    if (!res.ok) throw new Error(`Servizio percorsi non disponibile (errore ${res.status})`);
-    const data = await res.json();
-    if (data.code !== 'Ok' || !data.routes || !data.routes.length) throw new Error('Nessun percorso trovato');
+    // L'interruzione può arrivare anche mentre si legge la risposta.
+    if (timedOut) throw new Error('Il servizio percorsi non risponde, riprova');
+    if (signal && signal.aborted) throw new DOMException('Calcolo annullato', 'AbortError');
+    if (data && OSRM_ERRORS[data.code]) throw new Error(OSRM_ERRORS[data.code]);
+    if (!res.ok || !data) throw new Error(`Servizio percorsi non disponibile (errore ${res.status})`);
+    if (data.code !== 'Ok' || !data.routes || !data.routes.length) throw new Error('Nessun percorso trovato verso la cabina');
     return prepareRoute(data.routes[0], mode);
   }
 

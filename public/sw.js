@@ -4,7 +4,7 @@
 // presi dalla rete quando possibile e dalla cache quando si è offline.
 // Dati (/api), tile della mappa e percorsi non passano dalla cache.
 
-const CACHE = 'cabine-v2';
+const CACHE = 'cabine-v3';
 const SHELL = [
   './',
   'index.html',

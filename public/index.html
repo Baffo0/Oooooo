@@ -6,6 +6,7 @@
   <title>Mappa Cabine Fibra</title>
   <meta name="description" content="Mappa condivisa delle cabine della fibra dove lavora la squadra.">
   <meta name="theme-color" content="#0f6b5c">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Cabine">
   <link rel="manifest" href="manifest.webmanifest">
@@ -92,8 +93,8 @@
           </div>
           <div id="suggestions" class="suggestions" role="listbox" hidden></div>
           <div id="chips" class="chips" role="group" aria-label="Filtra per stato"></div>
-          <p id="sync-pill" class="sync-pill" hidden></p>
         </div>
+        <p id="sync-pill" class="sync-pill" role="status" hidden></p>
 
         <button id="btn-layers" class="map-btn" type="button" aria-label="Tipo di mappa" aria-expanded="false">
           <svg class="ico"><use href="#i-layers"/></svg>

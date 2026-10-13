@@ -3,10 +3,16 @@
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cabine-test-'));
+// Una cabina salvata da una versione precedente, senza foto né diario.
+fs.writeFileSync(path.join(dataDir, 'cabinets.json'), JSON.stringify({
+  version: 1,
+  cabinets: [{ id: 'vecchia', code: 'PFP 1', type: 'PFP', status: 'fatto', lat: 45, lng: 9, address: '', notes: '', createdBy: 'X', createdAt: '2024-01-01T00:00:00.000Z', updatedBy: 'X', updatedAt: '2024-01-01T00:00:00.000Z' }],
+}));
 process.env.DATA_DIR = dataDir;
 process.env.TEAM_PASSWORD = 'segreta';
 const { server, flush } = require('../server.js');
@@ -86,7 +92,7 @@ test('crea, legge, modifica ed elimina una cabina', async () => {
   assert.equal(cab.accuracy, 6);
 
   const list = await call('GET', '/api/cabinets');
-  assert.equal(list.data.cabinets.length, 1);
+  assert.ok(list.data.cabinets.some((c) => c.id === cab.id));
   const etag = list.headers.get('etag');
   const cached = await call('GET', '/api/cabinets', { headers: { 'if-none-match': etag } });
   assert.equal(cached.status, 304);
@@ -102,7 +108,7 @@ test('crea, legge, modifica ed elimina una cabina', async () => {
 
   const removed = await call('DELETE', `/api/cabinets/${cab.id}`);
   assert.equal(removed.status, 200);
-  assert.equal((await call('GET', '/api/cabinets')).data.cabinets.length, 0);
+  assert.ok(!(await call('GET', '/api/cabinets')).data.cabinets.some((c) => c.id === cab.id));
 });
 
 test('valida i dati in ingresso', async () => {
@@ -174,4 +180,29 @@ test('blocca dopo troppe password sbagliate, non dopo accessi riusciti', async (
   for (let i = 0; i < 9; i++) await call('POST', '/api/login', { body: { name: 'X', password: 'no' }, auth: false });
   const blocked = await call('POST', '/api/login', { body: { name: 'Marco', password: 'segreta' }, auth: false });
   assert.equal(blocked.status, 429);
+});
+
+test('le cabine salvate da versioni precedenti funzionano', async () => {
+  const logged = await call('POST', '/api/cabinets/vecchia/log', { body: { text: 'Controllata' } });
+  assert.equal(logged.status, 201);
+  assert.deepEqual(logged.data.photos, []);
+});
+
+test('un indirizzo malformato non fa cadere il server', async () => {
+  const { port } = server.address();
+  const reply = await new Promise((resolve, reject) => {
+    const socket = net.connect(port, '127.0.0.1', () => socket.end('GET //[ HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n'));
+    let data = '';
+    socket.on('data', (d) => { data += d; });
+    socket.on('end', () => resolve(data));
+    socket.on('error', reject);
+  });
+  assert.match(reply, /^HTTP\/1\.1 400/);
+  const res = await fetch(base + '/api/config');
+  assert.equal(res.status, 200);
+});
+
+test('un cookie malformato viene ignorato', async () => {
+  const res = await fetch(base + '/api/me', { headers: { cookie: `altro=%E0%A4%A; ${cookie}` } });
+  assert.equal(res.status, 200);
 });
