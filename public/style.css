@@ -117,12 +117,12 @@ label > input, label > select, label > textarea, label > .input-with-btn { margi
   text-decoration: none;
   color: var(--text);
 }
-.btn:hover { border-color: var(--muted); }
+@media (hover: hover) { .btn:hover { border-color: var(--muted); } }
 .btn:disabled { opacity: 0.6; cursor: default; }
 .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.btn-primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+@media (hover: hover) { .btn-primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); } }
 .btn-route { background: var(--route); border-color: var(--route); color: #fff; }
-.btn-route:hover { background: var(--route-dark); border-color: var(--route-dark); }
+@media (hover: hover) { .btn-route:hover { background: var(--route-dark); border-color: var(--route-dark); } }
 @media (prefers-color-scheme: dark) {
   .btn-primary, .btn-primary:hover { color: #08201b; }
   .btn-route, .btn-route:hover { color: #07152b; }
@@ -142,7 +142,8 @@ label > input, label > select, label > textarea, label > .input-with-btn { margi
   background: transparent;
   flex: none;
 }
-.icon-btn:hover { background: var(--accent-soft); }
+/* Sui touch screen l'effetto "mouse sopra" resterebbe acceso dopo il tocco. */
+@media (hover: hover) { .icon-btn:hover { background: var(--accent-soft); } }
 
 .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 14px; }
 .row.end { justify-content: flex-end; }
@@ -245,7 +246,8 @@ label > input, label > select, label > textarea, label > .input-with-btn { margi
   text-align: left;
 }
 .suggestion + .suggestion { border-top: 1px solid var(--border); }
-.suggestion:hover, .suggestion.active { background: var(--accent-soft); }
+.suggestion.active { background: var(--accent-soft); }
+@media (hover: hover) { .suggestion:hover { background: var(--accent-soft); } }
 .suggestion .ico { color: var(--muted); }
 .suggestion .badge { width: 32px; min-width: 32px; height: 32px; font-size: 0.62rem; }
 .suggestion-body { flex: 1; min-width: 0; }
@@ -253,13 +255,14 @@ label > input, label > select, label > textarea, label > .input-with-btn { margi
 .suggestion-body span { color: var(--muted); font-size: 0.85rem; }
 .suggestion .dist { font-size: 0.8rem; color: var(--muted); white-space: nowrap; }
 
+/* Filtri per stato: nell'elenco, sotto il titolo. */
 .chips {
   display: flex;
   gap: 8px;
-  margin-top: 8px;
   overflow-x: auto;
   scrollbar-width: none;
-  padding-bottom: 4px;
+  padding: 2px 16px 10px;
+  flex: none;
 }
 .chips::-webkit-scrollbar { display: none; }
 .chip-btn {
@@ -270,15 +273,31 @@ label > input, label > select, label > textarea, label > .input-with-btn { margi
   height: 34px;
   padding: 0 14px;
   border-radius: 17px;
-  border: 0;
+  border: 1px solid var(--border);
   background: var(--surface);
-  box-shadow: var(--shadow);
   font-size: 0.88rem;
   font-weight: 600;
 }
 .chip-btn::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--st, var(--muted)); }
 .chip-btn.all::before { display: none; }
-.chip-btn[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent-strong); box-shadow: inset 0 0 0 2px var(--accent), var(--shadow); }
+.chip-btn[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent-strong); border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.filter-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  height: 34px;
+  padding: 0 8px 0 14px;
+  border-radius: 17px;
+  border: 0;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.85rem;
+  font-weight: 650;
+  box-shadow: var(--shadow);
+}
+.filter-pill .ico { width: 18px; height: 18px; }
+@media (prefers-color-scheme: dark) { .filter-pill { color: #08201b; } }
 @media (prefers-color-scheme: dark) { .chip-btn[aria-pressed="true"] { color: var(--text); } }
 .sync-pill {
   position: absolute;
@@ -298,7 +317,7 @@ label > input, label > select, label > textarea, label > .input-with-btn { margi
 .map-btn {
   position: absolute;
   right: 10px;
-  top: calc(var(--safe-top) + 120px);
+  top: calc(var(--safe-top) + 74px);
   z-index: 1000;
   width: 44px;
   height: 44px;
@@ -312,7 +331,7 @@ label > input, label > select, label > textarea, label > .input-with-btn { margi
 .layers-menu {
   position: absolute;
   right: 60px;
-  top: calc(var(--safe-top) + 120px);
+  top: calc(var(--safe-top) + 74px);
   z-index: 1001;
   background: var(--surface);
   border-radius: 14px;
@@ -339,7 +358,7 @@ label > input, label > select, label > textarea, label > .input-with-btn { margi
   background: var(--bg);
   display: flex;
   flex-direction: column;
-  padding-top: calc(var(--safe-top) + 112px);
+  padding-top: calc(var(--safe-top) + 72px);
   transform: translateX(-100%);
   transition: transform 0.2s ease;
   visibility: hidden;
@@ -368,7 +387,7 @@ label > input, label > select, label > textarea, label > .input-with-btn { margi
   border-radius: 12px;
   padding: 10px 12px;
 }
-.item:hover { border-color: var(--accent); }
+@media (hover: hover) { .item:hover { border-color: var(--accent); } }
 .item-body { flex: 1; min-width: 0; }
 .item-title { font-weight: 650; overflow-wrap: anywhere; }
 .item-sub { color: var(--muted); font-size: 0.85rem; overflow-wrap: anywhere; }
@@ -605,7 +624,7 @@ label > input, label > select, label > textarea, label > .input-with-btn { margi
   .sheet {
     left: 12px;
     right: auto;
-    top: 128px;
+    top: 76px;
     bottom: 16px;
     width: 400px;
     max-height: none;
@@ -827,7 +846,7 @@ details summary { cursor: pointer; font-weight: 650; padding: 10px 0 2px; color:
   border-radius: 12px;
   background: var(--surface);
 }
-.choice:hover { border-color: var(--accent); background: var(--accent-soft); }
+@media (hover: hover) { .choice:hover { border-color: var(--accent); background: var(--accent-soft); } }
 .choice .ico { width: 28px; height: 28px; color: var(--accent); }
 
 /* Avvisi */

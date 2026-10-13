@@ -748,15 +748,33 @@ function setupFilters() {
     `<button type="button" class="chip-btn ${k ? `st-${k}` : 'all'}" data-status="${k}" aria-pressed="${k === state.filterStatus}">${esc(v)}</button>`).join('');
   $('#chips').addEventListener('click', (e) => {
     const b = e.target.closest('[data-status]');
-    if (!b) return;
-    state.filterStatus = b.dataset.status;
-    document.querySelectorAll('#chips [data-status]').forEach((c) => c.setAttribute('aria-pressed', String(c === b)));
-    renderAll();
+    if (b) setStatusFilter(b.dataset.status);
+  });
+  // Promemoria sulla mappa: un tocco toglie tutti i filtri.
+  $('#filter-pill').addEventListener('click', () => {
+    $('#filter-type').value = '';
+    setStatusFilter('');
   });
 
   const form = $('#cabinet-form');
   form.type.innerHTML = Object.entries(TYPE_LABELS).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('');
   form.status.innerHTML = Object.entries(STATUS_LABELS).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('');
+}
+
+function setStatusFilter(status) {
+  state.filterStatus = status;
+  document.querySelectorAll('#chips [data-status]').forEach((c) => c.setAttribute('aria-pressed', String(c.dataset.status === status)));
+  renderAll();
+}
+
+// I filtri stanno nell'elenco; a elenco chiuso la mappa ricorda quali sono attivi.
+function renderFilterPill() {
+  const type = $('#filter-type').value;
+  const parts = [state.filterStatus && STATUS_LABELS[state.filterStatus], type && (type === 'ALTRO' ? 'Altro' : TYPE_LABELS[type].split(' – ')[0])].filter(Boolean);
+  const listOpen = !isDesktop() && $('#list-panel').classList.contains('open');
+  $('#filter-pill').hidden = !parts.length || listOpen;
+  $('#filter-pill-text').textContent = `Filtro: ${parts.join(' · ')}`;
+  $('#filter-pill').setAttribute('aria-label', `Togli il filtro ${parts.join(', ')}`);
 }
 
 function filteredCabinets() {
@@ -851,6 +869,7 @@ function toggleList(force) {
   } else {
     open = force ?? !panel.classList.contains('open');
     panel.classList.toggle('open', open);
+    renderFilterPill();
     // Su telefono l'elenco occupa lo schermo: la scheda aperta resterebbe sopra.
     if (open) closeDetail();
   }
@@ -960,6 +979,7 @@ function renderAll() {
   renderMarkers();
   renderList();
   renderSuggestions();
+  renderFilterPill();
   if (state.selectedId && !state.pick && !nav.cabId) {
     if (getCabinet(state.selectedId)) renderDetail();
     else closeDetail();

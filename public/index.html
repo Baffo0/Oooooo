@@ -75,6 +75,7 @@
           </div>
           <select id="filter-type" aria-label="Filtra per tipo"></select>
         </div>
+        <div id="chips" class="chips" role="group" aria-label="Filtra per stato"></div>
         <ul id="list" class="list"></ul>
         <div id="list-empty" class="list-empty" hidden></div>
       </aside>
@@ -94,7 +95,11 @@
             <button id="btn-menu" class="avatar" type="button" aria-label="Menu"></button>
           </div>
           <div id="suggestions" class="suggestions" role="listbox" hidden></div>
-          <div id="chips" class="chips" role="group" aria-label="Filtra per stato"></div>
+          <!-- Sulla mappa solo un promemoria dei filtri scelti nell'elenco, per toglierli al volo. -->
+          <button id="filter-pill" class="filter-pill" type="button" hidden>
+            <span id="filter-pill-text"></span>
+            <svg class="ico"><use href="#i-close"/></svg>
+          </button>
         </div>
         <p id="sync-pill" class="sync-pill" role="status" hidden></p>
 
