@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Mappa Cabine Fibra</title>
+  <meta name="description" content="Mappa condivisa delle cabine della fibra dove lavora la squadra.">
+  <meta name="theme-color" content="#0f6b5c">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Cabine">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <svg class="sprite" aria-hidden="true">
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-locate" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+    <symbol id="i-nav" viewBox="0 0 24 24"><path d="M3 11l18-8-8 18-2-8z"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/></symbol>
+    <symbol id="i-move" viewBox="0 0 24 24"><path d="M12 2v20M2 12h20M12 2l-3 3M12 2l3 3M12 22l-3-3M12 22l3-3M2 12l3-3M2 12l3 3M22 12l-3-3M22 12l-3 3"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></symbol>
+    <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/></symbol>
+    <symbol id="i-gps" viewBox="0 0 24 24"><path d="M12 21s-7-6.5-7-12a7 7 0 0114 0c0 5.5-7 12-7 12z"/><circle cx="12" cy="9" r="2.5"/></symbol>
+    <symbol id="i-map" viewBox="0 0 24 24"><path d="M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2z"/><path d="M9 4v14M15 6v14"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></symbol>
+  </svg>
+
+  <!-- Accesso -->
+  <div id="login" class="login" hidden>
+    <form id="login-form" class="login-card">
+      <div class="login-logo"><img src="icons/icon.svg" alt="" width="64" height="64"></div>
+      <h1>Mappa Cabine Fibra</h1>
+      <p class="muted">Le posizioni delle cabine dove lavora la squadra, condivise tra tutti.</p>
+      <label>Il tuo nome
+        <input name="name" autocomplete="name" required maxlength="40" placeholder="es. Marco R.">
+      </label>
+      <label id="login-password-field">Password di squadra
+        <input name="password" type="password" autocomplete="current-password">
+      </label>
+      <p id="login-error" class="error" role="alert"></p>
+      <button class="btn btn-primary btn-block" type="submit">Entra</button>
+    </form>
+  </div>
+
+  <!-- Applicazione -->
+  <div id="app" class="app" hidden>
+    <header class="topbar">
+      <button id="btn-list" class="icon-btn" type="button" aria-label="Elenco cabine" aria-expanded="false">
+        <svg class="ico"><use href="#i-list"/></svg>
+      </button>
+      <div class="brand">
+        <strong>Cabine Fibra</strong>
+        <span id="sync-status" class="sync"></span>
+      </div>
+      <button id="btn-menu" class="icon-btn" type="button" aria-label="Menu">
+        <svg class="ico"><use href="#i-user"/></svg>
+      </button>
+    </header>
+
+    <main class="main">
+      <aside id="list-panel" class="list-panel" aria-label="Elenco cabine">
+        <div class="list-tools">
+          <div class="search">
+            <svg class="ico"><use href="#i-search"/></svg>
+            <input id="search" type="search" placeholder="Cerca codice, indirizzo, note…" autocomplete="off">
+          </div>
+          <div class="filters">
+            <select id="filter-type" aria-label="Filtra per tipo"></select>
+            <select id="filter-status" aria-label="Filtra per stato"></select>
+          </div>
+          <p id="list-count" class="muted small"></p>
+        </div>
+        <ul id="list" class="list"></ul>
+        <div id="list-empty" class="list-empty" hidden></div>
+      </aside>
+
+      <div class="map-wrap">
+        <div id="map" class="map"></div>
+        <div id="crosshair" class="crosshair" hidden aria-hidden="true"></div>
+        <div id="pick-bar" class="pick-bar" hidden>
+          <p id="pick-text">Sposta la mappa per mettere il mirino sulla cabina</p>
+          <div class="row">
+            <button id="pick-cancel" class="btn" type="button">Annulla</button>
+            <button id="pick-confirm" class="btn btn-primary" type="button">Conferma posizione</button>
+          </div>
+        </div>
+        <div id="fabs" class="fabs">
+          <button id="btn-locate" class="fab fab-small" type="button" aria-label="La mia posizione">
+            <svg class="ico"><use href="#i-locate"/></svg>
+          </button>
+          <button id="btn-add" class="fab" type="button" aria-label="Aggiungi cabina">
+            <svg class="ico"><use href="#i-plus"/></svg>
+          </button>
+        </div>
+        <section id="sheet" class="sheet" hidden aria-live="polite"></section>
+      </div>
+    </main>
+
+    <!-- Nuova cabina: scelta della posizione -->
+    <dialog id="add-dialog" class="dialog">
+      <form method="dialog" class="dialog-body">
+        <h2>Nuova cabina</h2>
+        <p class="muted">Da dove prendo la posizione?</p>
+        <button class="choice" value="gps">
+          <svg class="ico"><use href="#i-gps"/></svg>
+          <span><strong>Sono qui adesso</strong><br><span class="muted small">Usa il GPS del telefono</span></span>
+        </button>
+        <button class="choice" value="map">
+          <svg class="ico"><use href="#i-map"/></svg>
+          <span><strong>Scegli sulla mappa</strong><br><span class="muted small">Metti il mirino sul punto esatto</span></span>
+        </button>
+        <div class="row end"><button class="btn" value="cancel">Annulla</button></div>
+      </form>
+    </dialog>
+
+    <!-- Modulo cabina -->
+    <dialog id="form-dialog" class="dialog dialog-wide">
+      <form id="cabinet-form" class="dialog-body">
+        <h2 id="form-title">Nuova cabina</h2>
+        <p id="form-position" class="muted small"></p>
+        <p id="form-warning" class="warning small" hidden></p>
+        <label>Codice / nome
+          <input name="code" maxlength="80" placeholder="es. PFP 012 – Via Roma" autocomplete="off">
+        </label>
+        <div class="grid2">
+          <label>Tipo
+            <select name="type"></select>
+          </label>
+          <label>Stato
+            <select name="status"></select>
+          </label>
+        </div>
+        <label>Indirizzo
+          <span class="input-with-btn">
+            <input name="address" maxlength="200" placeholder="Via, civico, comune" autocomplete="off">
+            <button id="btn-geocode" class="btn" type="button">Rileva</button>
+          </span>
+        </label>
+        <label>Note
+          <textarea name="notes" rows="4" maxlength="4000" placeholder="Accesso, chiavi, riferimenti, cosa c'è da fare…"></textarea>
+        </label>
+        <p id="form-error" class="error" role="alert"></p>
+        <div class="row end">
+          <button id="form-cancel" class="btn" type="button">Annulla</button>
+          <button class="btn btn-primary" type="submit">Salva</button>
+        </div>
+      </form>
+    </dialog>
+
+    <!-- Menu utente -->
+    <dialog id="menu-dialog" class="dialog">
+      <form method="dialog" class="dialog-body">
+        <h2>Ciao <span id="menu-name"></span></h2>
+        <p class="muted small">Scarica una copia di tutte le cabine (backup o per aprirle in altri programmi).</p>
+        <div class="stack">
+          <button class="btn" value="csv">Esporta Excel (CSV)</button>
+          <button class="btn" value="kml">Esporta Google Earth (KML)</button>
+          <button class="btn" value="geojson">Esporta GeoJSON</button>
+        </div>
+        <hr>
+        <div class="row between">
+          <button class="btn btn-danger-text" value="logout">Esci</button>
+          <button class="btn" value="close">Chiudi</button>
+        </div>
+      </form>
+    </dialog>
+
+    <input id="photo-input" type="file" accept="image/*" hidden>
+    <div id="toast" class="toast" role="status" hidden></div>
+  </div>
+
+  <script src="vendor/leaflet/leaflet.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+# Blueprint per Render (https://render.com): crea il servizio web con un disco
+# persistente dove vengono salvate cabine e foto.
+services:
+  - type: web
+    name: mappa-cabine-fibra
+    runtime: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /api/config
+    envVars:
+      - key: TEAM_PASSWORD
+        sync: false
+      - key: DATA_DIR
+        value: /var/data
+    disk:
+      name: dati-cabine
+      mountPath: /var/data
+      sizeGB: 1
