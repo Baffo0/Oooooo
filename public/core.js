@@ -10,6 +10,7 @@
   const MAX_PHOTOS = 6;
   const MAX_PHOTO_BYTES = 8 * 1024 * 1024;
   const MAX_LOG_ENTRIES = 500;
+  const MAX_IMPORT = 5000;
 
   // Errore con codice HTTP: il server lo trasforma in risposta, l'app senza server pure.
   class CoreError extends Error {
@@ -98,6 +99,29 @@
     return { cabinet: cab, created: true };
   }
 
+  // Importazione di tanti punti insieme (es. da Google My Maps): o entrano tutti o nessuno.
+  // Ogni punto ha un clientId fisso, così importare due volte lo stesso file non crea doppioni.
+  function importCabinets(db, body, ctx) {
+    const list = body && body.cabinets;
+    if (!Array.isArray(list) || !list.length) throw new CoreError(400, 'Nessun punto da importare');
+    if (list.length > MAX_IMPORT) throw new CoreError(400, `Al massimo ${MAX_IMPORT} punti per volta`);
+    list.forEach((item, i) => {
+      if (!item || typeof item !== 'object') throw new CoreError(400, `Punto ${i + 1} non valido`);
+      try {
+        cabinetFields(item);
+      } catch (err) {
+        throw new CoreError(400, `Punto ${i + 1} (${String(item.code || '').slice(0, 40) || 'senza nome'}): ${err.message}`);
+      }
+    });
+    let created = 0;
+    let existing = 0;
+    for (const item of list) {
+      if (createCabinet(db, item, ctx).created) created += 1;
+      else existing += 1;
+    }
+    return { created, existing };
+  }
+
   function updateCabinet(db, id, body, ctx) {
     const cab = findCabinet(db, id);
     if (body.baseUpdatedAt && body.baseUpdatedAt !== cab.updatedAt) {
@@ -170,6 +194,7 @@
     MAX_PHOTOS,
     MAX_PHOTO_BYTES,
     MAX_LOG_ENTRIES,
+    MAX_IMPORT,
     CoreError,
     cleanText,
     cleanNumber,
@@ -177,6 +202,7 @@
     normalize,
     findCabinet,
     createCabinet,
+    importCabinets,
     updateCabinet,
     deleteCabinet,
     addLog,

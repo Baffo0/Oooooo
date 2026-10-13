@@ -2087,6 +2087,168 @@ function exportKml() {
   download(exportName('kml'), kml, 'application/vnd.google-earth.kml+xml');
 }
 
+// ---------------------------------------------------------------------------
+// Importazione da Google My Maps, Google Earth o GeoJSON
+// ---------------------------------------------------------------------------
+
+const importState = { name: '', points: [], skipped: null };
+
+$('#menu-import').addEventListener('click', () => {
+  $('#menu-dialog').close();
+  const input = $('#import-input');
+  input.value = '';
+  input.click();
+});
+
+$('#import-input').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  try {
+    const data = await CabineImport.readFile(file);
+    if (!data.points.length) {
+      toast(data.skipped.notPoint ? 'Nel file ci sono solo linee o aree: nessun punto da importare'
+        : 'Nel file non ci sono punti da importare', true, 6000);
+      return;
+    }
+    openImport(data);
+  } catch (err) {
+    toast(err instanceof CabineImport.ImportError ? err.message : 'Il file non si riesce a leggere', true, 6000);
+  } finally {
+    e.target.value = '';
+  }
+});
+
+// Già presente: importato prima (stesso identificativo) oppure con lo stesso nome a meno di
+// 50 m; senza nome, un'altra cabina a meno di 3 m.
+function markPresent(points) {
+  const ids = new Set(state.cabinets.map((c) => c.clientId).filter(Boolean));
+  const byName = new Map();
+  for (const c of state.cabinets) {
+    const key = c.code.trim().replace(/\s+/g, ' ').toLowerCase();
+    if (!key) continue;
+    if (!byName.has(key)) byName.set(key, []);
+    byName.get(key).push(c);
+  }
+  const seen = new Set();
+  for (const p of points) {
+    const key = p.code.toLowerCase();
+    p.present = ids.has(p.clientId) || seen.has(p.clientId) ||
+      (key ? (byName.get(key) || []).some((c) => distance(c, p) < 50) : state.cabinets.some((c) => distance(c, p) < 3));
+    seen.add(p.clientId);
+  }
+}
+
+function openImport(data) {
+  const form = $('#import-form');
+  importState.name = data.name;
+  importState.skipped = data.skipped;
+  importState.points = data.points.map((p) => ({ ...p, clientId: CabineImport.pointId(p) }));
+  markPresent(importState.points);
+
+  const counts = new Map();
+  for (const p of importState.points) {
+    const c = counts.get(p.group) || { total: 0, present: 0 };
+    c.total += 1;
+    if (p.present) c.present += 1;
+    counts.set(p.group, c);
+  }
+  $('#import-groups').innerHTML = data.groups.map((g) => {
+    const c = counts.get(g.name);
+    return `<label class="import-group">
+      <input type="checkbox" data-group="${esc(g.name)}" checked>
+      <span class="import-group-name">${esc(g.name)}</span>
+      <span class="import-group-count">${c.total} ${c.total === 1 ? 'punto' : 'punti'}${c.present ? ` · ${c.present} già presenti` : ''}</span>
+    </label>`;
+  }).join('');
+
+  // Tipo proposto: quello scritto nei nomi della maggior parte dei punti, o nel nome della mappa.
+  const freq = new Map();
+  for (const p of importState.points) if (p.type) freq.set(p.type, (freq.get(p.type) || 0) + 1);
+  const common = [...freq.entries()].sort((a, b) => b[1] - a[1])[0];
+  form.type.innerHTML = Object.entries(TYPE_LABELS).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('');
+  form.type.value = common ? common[0] : importState.points[0].docType || 'ALTRO';
+  form.status.innerHTML = Object.entries(STATUS_LABELS).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('');
+  form.status.value = 'da_fare';
+
+  const notes = [`«${data.name}»`, `${data.points.length} punti`];
+  if (data.skipped.notPoint) notes.push(`${data.skipped.notPoint} linee o aree non importabili`);
+  if (data.skipped.invalid) notes.push(`${data.skipped.invalid} senza coordinate valide`);
+  $('#import-source').textContent = notes.join(' · ');
+  $('#import-error').textContent = '';
+  updateImportSummary();
+  $('#import-dialog').showModal();
+}
+
+function selectedImportPoints() {
+  const groups = new Set([...document.querySelectorAll('#import-groups input:checked')].map((i) => i.dataset.group));
+  return importState.points.filter((p) => groups.has(p.group));
+}
+
+function updateImportSummary() {
+  const form = $('#import-form');
+  const selected = selectedImportPoints();
+  const fresh = selected.filter((p) => !p.present);
+  const skip = selected.length - fresh.length;
+  const own = fresh.filter((p) => p.type && p.type !== form.type.value);
+  $('#import-type-note').textContent = own.length
+    ? `${own.length} ${own.length === 1 ? 'punto ha' : 'punti hanno'} un altro tipo scritto nel nome (es. ${TYPE_LABELS[own[0].type].split(' – ')[0]}) e lo tengono.`
+    : '';
+  $('#import-summary').textContent = fresh.length
+    ? `Verranno aggiunte ${fresh.length} cabine${skip ? ` · ${skip} ci sono già e vengono saltate` : ''}.`
+    : selected.length ? 'Le cabine scelte ci sono già tutte.' : 'Scegli almeno un gruppo.';
+  const go = $('#import-go');
+  go.disabled = !fresh.length;
+  go.textContent = fresh.length ? `Importa ${fresh.length}` : 'Importa';
+}
+
+$('#import-groups').addEventListener('change', updateImportSummary);
+$('#import-form').type.addEventListener('change', updateImportSummary);
+$('#import-all').addEventListener('click', () => {
+  document.querySelectorAll('#import-groups input').forEach((i) => { i.checked = true; });
+  updateImportSummary();
+});
+$('#import-none').addEventListener('click', () => {
+  document.querySelectorAll('#import-groups input').forEach((i) => { i.checked = false; });
+  updateImportSummary();
+});
+
+$('#import-form').addEventListener('submit', async (e) => {
+  if (e.submitter?.value !== 'import') return; // Annulla chiude la finestra
+  e.preventDefault();
+  const form = e.currentTarget;
+  const list = selectedImportPoints().filter((p) => !p.present).map((p) => ({
+    clientId: p.clientId,
+    code: p.code,
+    type: p.type || form.type.value,
+    status: p.status || form.status.value,
+    lat: p.lat,
+    lng: p.lng,
+    address: p.address,
+    notes: p.notes,
+  }));
+  if (!list.length) return;
+  const go = $('#import-go');
+  go.disabled = true;
+  go.textContent = 'Importo…';
+  $('#import-error').textContent = '';
+  try {
+    const { data } = await api('/api/cabinets/import', { method: 'POST', body: { cabinets: list } });
+    $('#import-dialog').close();
+    state.localChanges += 1;
+    state.etag = null;
+    setFollow(false);
+    state.userMovedMap = true;
+    map.fitBounds(L.latLngBounds(list.map((p) => [p.lat, p.lng])), { padding: [40, 40], maxZoom: 16 });
+    toast(`Importate ${data.created} cabine${data.existing ? ` (${data.existing} c'erano già)` : ''}`, false, 5000);
+    await refresh();
+  } catch (err) {
+    $('#import-error').textContent = isNetworkError(err)
+      ? 'Serve la connessione per importare: riprova quando c\'è campo'
+      : err.message;
+    updateImportSummary();
+  }
+});
+
 // Tasto Indietro di Android ed Esc: chiude la cosa aperta più in alto.
 // Restituisce false quando non c'è niente da chiudere (l'app Android allora va in secondo piano).
 function goBack() {

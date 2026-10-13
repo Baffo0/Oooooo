@@ -107,6 +107,12 @@
       return ok(result.created ? 201 : 200, result.cabinet);
     }
 
+    if (path === '/api/cabinets/import' && method === 'POST') {
+      const result = Core.importCabinets(db, body || {}, ctx);
+      if (result.created) await saveArchive();
+      return ok(200, result);
+    }
+
     let m = path.match(/^\/api\/cabinets\/([\w-]+)$/);
     if (m && method === 'PUT') {
       const cab = Core.updateCabinet(db, m[1], body || {}, ctx);

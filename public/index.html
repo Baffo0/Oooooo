@@ -229,11 +229,46 @@
           <button class="btn" value="kml">Esporta Google Earth (KML)</button>
           <button class="btn" value="geojson">Esporta GeoJSON</button>
         </div>
+        <p class="muted small">Aggiungi i punti di una mappa di Google My Maps o Google Earth (file KML o KMZ) oppure di un GeoJSON.</p>
+        <div class="stack">
+          <button id="menu-import" class="btn" type="button">Importa da Google My Maps (KML/KMZ)</button>
+        </div>
         <button id="menu-settings" class="btn btn-block" value="settings" hidden>Modalità e server</button>
         <hr>
         <div class="row between">
           <button id="menu-logout" class="btn btn-danger-text" value="logout">Esci</button>
           <button class="btn" value="close">Chiudi</button>
+        </div>
+      </form>
+    </dialog>
+
+    <!-- Importazione da Google My Maps / Google Earth / GeoJSON -->
+    <dialog id="import-dialog" class="dialog dialog-wide">
+      <form id="import-form" method="dialog" class="dialog-body">
+        <h2>Importa punti</h2>
+        <p id="import-source" class="muted small"></p>
+        <div class="row between import-groups-head">
+          <strong>Cosa importare</strong>
+          <span class="row">
+            <button id="import-all" class="btn btn-small" type="button">Tutti</button>
+            <button id="import-none" class="btn btn-small" type="button">Nessuno</button>
+          </span>
+        </div>
+        <div id="import-groups" class="import-groups"></div>
+        <div class="grid2">
+          <label>Tipo
+            <select name="type"></select>
+          </label>
+          <label>Stato
+            <select name="status"></select>
+          </label>
+        </div>
+        <p id="import-type-note" class="muted small"></p>
+        <p id="import-summary" class="small" role="status"></p>
+        <p id="import-error" class="error" role="alert"></p>
+        <div class="row end">
+          <button class="btn" value="cancel" formnovalidate>Annulla</button>
+          <button id="import-go" class="btn btn-primary" type="submit" value="import">Importa</button>
         </div>
       </form>
     </dialog>
@@ -254,6 +289,7 @@
     </div>
 
     <input id="photo-input" type="file" accept="image/*" hidden>
+    <input id="import-input" type="file" accept=".kml,.kmz,.geojson,.json,application/vnd.google-earth.kml+xml,application/vnd.google-earth.kmz,application/geo+json" hidden>
     <div id="toast" class="toast" role="status" hidden></div>
   </div>
 
@@ -264,6 +300,7 @@
   <script src="core.js"></script>
   <script src="routing.js"></script>
   <script src="local-api.js"></script>
+  <script src="import.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

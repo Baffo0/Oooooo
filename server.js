@@ -21,6 +21,7 @@ const TEAM_PASSWORD = process.env.TEAM_PASSWORD || '';
 const SESSION_DAYS = Number(process.env.SESSION_DAYS) || 90;
 
 const MAX_JSON_BYTES = 200 * 1024;
+const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // Archivio (file JSON con scrittura atomica)
@@ -208,8 +209,8 @@ function readBody(req, limit) {
   });
 }
 
-async function readJson(req) {
-  const buf = await readBody(req, MAX_JSON_BYTES);
+async function readJson(req, limit = MAX_JSON_BYTES) {
+  const buf = await readBody(req, limit);
   try {
     const data = JSON.parse(buf.toString('utf8') || '{}');
     if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error();
@@ -281,6 +282,12 @@ async function handleApi(req, res, url) {
     const result = Core.createCabinet(db, await readJson(req), ctx);
     if (result.created) await persist();
     return sendJson(res, result.created ? 201 : 200, result.cabinet);
+  }
+
+  if (pathname === '/api/cabinets/import' && method === 'POST') {
+    const result = Core.importCabinets(db, await readJson(req, MAX_IMPORT_BYTES), ctx);
+    if (result.created) await persist();
+    return sendJson(res, 200, result);
   }
 
   let m = pathname.match(/^\/api\/cabinets\/([\w-]+)$/);

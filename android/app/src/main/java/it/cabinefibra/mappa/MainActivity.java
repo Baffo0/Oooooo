@@ -597,13 +597,16 @@ public class MainActivity extends AppCompatActivity {
         cameraFile = null;
         cameraUri = null;
 
-        Intent gallery = new Intent(Intent.ACTION_GET_CONTENT);
-        gallery.addCategory(Intent.CATEGORY_OPENABLE);
-        gallery.setType("image/*");
-        if (pendingFileMultiple) gallery.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+        // Foto (galleria o fotocamera) oppure un file qualsiasi, es. la mappa KML/KMZ da importare:
+        // Android spesso non conosce il tipo dei file KML, quindi per quelli si mostra tutto.
+        boolean images = acceptsOnlyImages(params);
+        Intent pick = new Intent(Intent.ACTION_GET_CONTENT);
+        pick.addCategory(Intent.CATEGORY_OPENABLE);
+        pick.setType(images ? "image/*" : "*/*");
+        if (pendingFileMultiple) pick.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
 
-        Intent chooser = Intent.createChooser(gallery, "Aggiungi foto");
-        Intent camera = createCameraIntent();
+        Intent chooser = Intent.createChooser(pick, images ? "Aggiungi foto" : "Scegli il file");
+        Intent camera = images ? createCameraIntent() : null;
         if (camera != null) {
             chooser.putExtra(Intent.EXTRA_INITIAL_INTENTS, new Intent[]{camera});
         }
@@ -613,7 +616,21 @@ public class MainActivity extends AppCompatActivity {
         } catch (ActivityNotFoundException e) {
             pendingFileCallback = null;
             callback.onReceiveValue(null);
-            Toast.makeText(this, "Nessuna app per scegliere le foto", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, images ? "Nessuna app per scegliere le foto" : "Nessuna app per scegliere i file",
+                    Toast.LENGTH_SHORT).show();
+        }
+        return true;
+    }
+
+    /** true se la pagina chiede solo immagini (o non dice cosa), come il campo delle foto. */
+    private static boolean acceptsOnlyImages(WebChromeClient.FileChooserParams params) {
+        if (params == null || params.getAcceptTypes() == null) return true;
+        for (String type : params.getAcceptTypes()) {
+            if (type == null) continue;
+            for (String part : type.split(",")) {
+                String t = part.trim().toLowerCase(Locale.ROOT);
+                if (!t.isEmpty() && !t.startsWith("image/")) return false;
+            }
         }
         return true;
     }

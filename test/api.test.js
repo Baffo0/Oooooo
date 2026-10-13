@@ -257,3 +257,44 @@ test('l\'elenco delle cabine viaggia compresso', async () => {
   const notModified = await rawGet('/api/cabinets', { cookie, 'accept-encoding': 'gzip', 'if-none-match': res.headers.etag });
   assert.equal(notModified.status, 304);
 });
+
+test('importa tanti punti insieme, senza doppioni se si ripete', async () => {
+  const cabinets = Array.from({ length: 120 }, (_, i) => ({
+    clientId: `imp-prova-${i}`,
+    code: `NA_0${1 + (i % 6)} PFS ${i}`,
+    type: 'PFS',
+    status: 'da_fare',
+    lat: 40.85 + i * 0.001,
+    lng: 14.25,
+    notes: 'Da Google My Maps',
+  }));
+  const first = await call('POST', '/api/cabinets/import', { body: { cabinets } });
+  assert.equal(first.status, 200);
+  assert.deepEqual(first.data, { created: 120, existing: 0 });
+  const again = await call('POST', '/api/cabinets/import', { body: { cabinets } });
+  assert.deepEqual(again.data, { created: 0, existing: 120 });
+  const list = await call('GET', '/api/cabinets');
+  assert.equal(list.data.cabinets.filter((c) => c.clientId?.startsWith('imp-prova-')).length, 120);
+  const one = list.data.cabinets.find((c) => c.clientId === 'imp-prova-7');
+  assert.equal(one.code, 'NA_02 PFS 7');
+  assert.equal(one.createdBy, 'Marco');
+});
+
+test('importazione: o tutti o nessuno, con limiti e accesso', async () => {
+  const before = (await call('GET', '/api/cabinets')).data.cabinets.length;
+  const bad = await call('POST', '/api/cabinets/import', { body: { cabinets: [
+    { clientId: 'imp-ok', code: 'Buono', type: 'PFS', lat: 41, lng: 14 },
+    { clientId: 'imp-ko', code: 'Sbagliato', type: 'PFS', lat: 141, lng: 14 },
+  ] } });
+  assert.equal(bad.status, 400);
+  assert.match(bad.data.error, /Punto 2 \(Sbagliato\)/);
+  assert.equal((await call('GET', '/api/cabinets')).data.cabinets.length, before);
+
+  assert.equal((await call('POST', '/api/cabinets/import', { body: { cabinets: [] } })).status, 400);
+  assert.equal((await call('POST', '/api/cabinets/import', { body: { cabinets: 'x' } })).status, 400);
+  const tooMany = Array.from({ length: 5001 }, (_, i) => ({ lat: 41, lng: 14, clientId: `t${i}` }));
+  assert.equal((await call('POST', '/api/cabinets/import', { body: { cabinets: tooMany } })).status, 400);
+  assert.equal((await call('POST', '/api/cabinets/import', { body: { cabinets: [{ lat: 41, lng: 14 }] }, auth: false })).status, 401);
+  const foreign = await call('POST', '/api/cabinets/import', { body: { cabinets: [{ lat: 41, lng: 14 }] }, headers: { origin: 'https://altro.example' } });
+  assert.equal(foreign.status, 403);
+});

@@ -849,6 +849,30 @@ details summary { cursor: pointer; font-weight: 650; padding: 10px 0 2px; color:
 @media (hover: hover) { .choice:hover { border-color: var(--accent); background: var(--accent-soft); } }
 .choice .ico { width: 28px; height: 28px; color: var(--accent); }
 
+/* Importazione */
+.import-groups-head { margin-top: 14px; align-items: center; }
+.import-groups-head .row { gap: 6px; margin-top: 0; }
+.import-groups {
+  margin-top: 8px;
+  max-height: min(40vh, 320px);
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.import-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  padding: 10px 12px;
+  font-weight: 400;
+  cursor: pointer;
+}
+.import-group + .import-group { border-top: 1px solid var(--border); }
+.import-group input { width: 22px; height: 22px; margin: 0; flex: none; accent-color: var(--accent); }
+.import-group-name { flex: 1; min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
+.import-group-count { color: var(--muted); font-size: 0.85rem; white-space: nowrap; }
+
 /* Avvisi */
 .toast {
   position: fixed;
