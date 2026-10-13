@@ -28,6 +28,12 @@ dell'APK, che viene pubblicato sempre allo stesso indirizzo:
    il file potrebbe essere dannoso, tocca **Scarica comunque**.
 3. Apri il file scaricato dalla notifica del download oppure dall'app **Archivio**
    (*My Files*) → **Download** → `cabine-fibra.apk`.
+
+   **Se il download resta fermo al 100%** (succede con alcune versioni di Chrome per
+   Android con i file APK): scarica lo stesso APK dentro uno ZIP,
+   **https://github.com/Baffo0/Oooooo/releases/download/apk-test/cabine-fibra.zip**,
+   poi apri **Archivio → Download → `cabine-fibra.zip` → Estrai** e tocca
+   `cabine-fibra.apk`. In alternativa usa **Samsung Internet** al posto di Chrome.
 4. La prima volta Android chiede di consentire a quell'app di **«installare app
    sconosciute»**: attiva l'opzione, torna indietro e tocca **Installa**.
 5. Se compare **Play Protect** («app non riconosciuta»), tocca **Altri dettagli →

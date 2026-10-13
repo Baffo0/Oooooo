@@ -25,6 +25,8 @@ Pensata per il telefono, in strada: si apre dal browser e si può aggiungere all
 C'è anche un'app Android (APK) da installare sul telefono. L'ultima versione si scarica sempre da qui:
 <https://github.com/Baffo0/Oooooo/releases/download/apk-test/cabine-fibra.apk>
 
+Se sul telefono il download dell'APK resta fermo al 100%, c'è lo stesso file dentro uno ZIP da aprire con l'app Archivio: <https://github.com/Baffo0/Oooooo/releases/download/apk-test/cabine-fibra.zip>
+
 Al primo avvio si sceglie come usarla:
 
 - **Prova sul telefono**: funziona subito, senza server. Le cabine restano salvate solo su quel telefono.

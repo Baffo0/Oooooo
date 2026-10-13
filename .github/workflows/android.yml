@@ -50,8 +50,13 @@ jobs:
           chmod +x gradlew
           ./gradlew --no-daemon assembleDebug
 
-      - name: Rinomina l'APK
-        run: cp android/app/build/outputs/apk/debug/app-debug.apk cabine-fibra.apk
+      # Oltre all'APK pubblichiamo lo stesso file dentro uno ZIP: alcune versioni di Chrome
+      # per Android lasciano il download di un APK fermo al 100% senza salvarlo, mentre
+      # uno ZIP si scarica come un file normale e si apre poi con l'app Archivio.
+      - name: Rinomina l'APK e prepara lo ZIP
+        run: |
+          cp android/app/build/outputs/apk/debug/app-debug.apk cabine-fibra.apk
+          zip -j -X cabine-fibra.zip cabine-fibra.apk
 
       # Prima l'artifact: se la pubblicazione della release fallisce, l'APK resta
       # comunque scaricabile dalla pagina di questa esecuzione.
@@ -59,7 +64,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: cabine-fibra-apk
-          path: cabine-fibra.apk
+          path: |
+            cabine-fibra.apk
+            cabine-fibra.zip
           if-no-files-found: error
 
   release:
@@ -87,6 +94,7 @@ jobs:
           RUN_NUMBER: ${{ github.run_number }}
         run: |
           test -s cabine-fibra.apk
+          test -s cabine-fibra.zip
 
           cat > release-notes.md <<EOF
           APK di prova di **Cabine Fibra**, versione 0.1.${RUN_NUMBER} (build ${RUN_NUMBER}), dal commit ${COMMIT_SHA}.
@@ -95,6 +103,7 @@ jobs:
           1. Samsung Galaxy: disattiva prima «Blocco automatico» in Impostazioni → Sicurezza e privacy → Blocco automatico. È attivo di serie e blocca gli APK scaricati fuori dagli store (il download arriva al 100% ma non si installa). Puoi riattivarlo dopo l'installazione.
           2. Apri il link con Chrome o Samsung Internet: https://github.com/${GH_REPO}/releases/download/apk-test/cabine-fibra.apk (se il browser avvisa che il file potrebbe essere dannoso, tocca «Scarica comunque»).
           3. Apri il file dalla notifica del download oppure dall'app «Archivio» → Download → cabine-fibra.apk.
+             Se il download resta fermo al 100%: scarica invece lo ZIP https://github.com/${GH_REPO}/releases/download/apk-test/cabine-fibra.zip, aprilo con «Archivio» → Download → cabine-fibra.zip → «Estrai», poi tocca cabine-fibra.apk.
           4. Se il telefono lo chiede, consenti a quell'app di «installare app sconosciute» e torna indietro.
           5. Tocca «Installa» (oppure «Aggiorna» se l'app c'è già: le cabine salvate restano). Se Play Protect avvisa, tocca «Altri dettagli» → «Installa comunque».
 
@@ -108,7 +117,7 @@ jobs:
           # Fino a 3 tentativi, per non lasciare il link senza APK per un errore passeggero.
           for attempt in 1 2 3; do
             gh release delete apk-test --cleanup-tag --yes || true
-            if gh release create apk-test cabine-fibra.apk \
+            if gh release create apk-test cabine-fibra.apk cabine-fibra.zip \
                 --prerelease \
                 --target "${COMMIT_SHA}" \
                 --title "APK di prova (build ${RUN_NUMBER})" \
