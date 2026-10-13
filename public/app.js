@@ -31,11 +31,30 @@ const state = {
   selectedId: null,
   pick: null,
   form: null,
+  filterStatus: '',
+  follow: false,
+  userMovedMap: false,
+  locateSettled: false,
+  listPos: null,
   fitted: Boolean(loadJson('cabine.view', null)),
+};
+
+// Percorso in corso verso una cabina (anteprima o navigazione).
+const nav = {
+  cabId: null,
+  mode: 'car',
+  routes: {},
+  errors: {},
+  active: false,
+  rerouting: false,
+  lastReroute: 0,
+  abort: null,
+  wakeLock: null,
 };
 
 let map;
 let markersLayer;
+let routeLayer;
 let meMarker;
 let meCircle;
 const markers = new Map();
@@ -208,6 +227,7 @@ function startApp() {
   $('#login').hidden = true;
   $('#app').hidden = false;
   $('#menu-name').textContent = state.me.name;
+  $('#btn-menu').textContent = state.me.name.trim().charAt(0).toUpperCase();
   if (!started) {
     started = true;
     $('#btn-list').setAttribute('aria-expanded', String(isDesktop()));
@@ -219,6 +239,13 @@ function startApp() {
       state.etag = cache.etag;
     }
     renderAll();
+    // Come su Google Maps la mappa si apre sulla tua posizione; se il GPS non risponde
+    // entro qualche secondo si mostrano tutte le cabine.
+    startWatch();
+    setTimeout(() => {
+      state.locateSettled = true;
+      fitInitialView();
+    }, 5000);
     setInterval(() => { if (!document.hidden) refresh(); }, REFRESH_MS);
     document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
     window.addEventListener('online', () => refresh());
@@ -272,12 +299,15 @@ async function flushPending() {
 }
 
 function renderSync() {
-  const el = $('#sync-status');
   const parts = [];
   if (state.offline) parts.push('Offline');
   else if (state.lastSync) parts.push(`Aggiornato alle ${state.lastSync.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}`);
   if (state.pending.length) parts.push(`${state.pending.length} da inviare`);
-  el.textContent = parts.join(' · ');
+  $('#sync-status').textContent = parts.join(' · ');
+  // Sulla mappa l'avviso compare solo quando c'è qualcosa da sapere.
+  const pill = $('#sync-pill');
+  pill.hidden = !state.offline && !state.pending.length;
+  pill.textContent = parts.filter((t) => !t.startsWith('Aggiornato')).join(' · ');
 }
 
 function upsertCabinet(cab) {
@@ -297,22 +327,40 @@ function getCabinet(id) {
 // Mappa
 // ---------------------------------------------------------------------------
 
+const LAYERS = {
+  strade: () => L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+    subdomains: 'abcd',
+    maxZoom: 20,
+    maxNativeZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+  }),
+  satellite: () => L.layerGroup([
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 20,
+      maxNativeZoom: 19,
+      zIndex: 1,
+      attribution: 'Immagini &copy; Esri, Maxar, Earthstar Geographics',
+    }),
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png', {
+      subdomains: 'abcd',
+      maxZoom: 20,
+      maxNativeZoom: 19,
+      zIndex: 2,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+    }),
+  ]),
+  osm: () => L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 20,
+    maxNativeZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+  }),
+};
+let baseLayer;
+
 function initMap() {
   const saved = loadJson('cabine.view', null);
-  map = L.map('map', { zoomControl: false, attributionControl: true });
-  const street = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-  });
-  const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-    maxZoom: 19,
-    attribution: 'Immagini &copy; Esri, Maxar, Earthstar Geographics',
-  });
-  const layers = { Mappa: street, Satellite: satellite };
-  (layers[localStorage.getItem('cabine.layer')] || street).addTo(map);
-  L.control.layers(layers, null, { position: 'topright' }).addTo(map);
-  L.control.zoom({ position: 'topright' }).addTo(map);
-  map.on('baselayerchange', (e) => localStorage.setItem('cabine.layer', e.name));
+  map = L.map('map', { zoomControl: false, maxZoom: 20 });
+  setLayer(LAYERS[localStorage.getItem('cabine.layer')] ? localStorage.getItem('cabine.layer') : 'strade');
   if (saved) map.setView(saved.center, saved.zoom);
   else map.setView(DEFAULT_VIEW.center, DEFAULT_VIEW.zoom);
   // Registrato dopo setView, così la vista predefinita non viene salvata come scelta dell'utente.
@@ -320,30 +368,71 @@ function initMap() {
     const c = map.getCenter();
     saveJson('cabine.view', { center: [c.lat, c.lng], zoom: map.getZoom() });
   });
+  map.on('zoomend', updateLabels);
+  updateLabels();
+  // Chi tocca o trascina la mappa decide lui dove guardare: smettiamo di seguire il GPS.
+  map.getContainer().addEventListener('pointerdown', () => { state.userMovedMap = true; }, { passive: true });
+  map.getContainer().addEventListener('wheel', () => { state.userMovedMap = true; }, { passive: true });
+  map.on('dragstart', () => setFollow(false));
   // Pressione prolungata (o tasto destro) per aggiungere una cabina in quel punto.
   map.on('contextmenu', (e) => {
-    if (state.pick) return;
+    if (state.pick || nav.cabId) return;
     openForm({ mode: 'create', lat: e.latlng.lat, lng: e.latlng.lng, accuracy: null });
   });
-  map.on('click', () => { if (!state.pick && !isDesktop()) closeDetail(); });
+  map.on('click', () => {
+    closeLayersMenu();
+    if (!state.pick && !nav.cabId && !isDesktop()) closeDetail();
+  });
+  routeLayer = L.layerGroup().addTo(map);
   markersLayer = L.layerGroup().addTo(map);
 }
 
-// Al primo avvio inquadra tutte le cabine; poi la mappa riparte dall'ultima vista usata.
-function fitInitialView() {
-  if (state.fitted || !state.cabinets.length) return;
-  state.fitted = true;
-  map.fitBounds(L.latLngBounds(state.cabinets.map((c) => [c.lat, c.lng])), { padding: [40, 40], maxZoom: 16 });
+function setLayer(name) {
+  if (baseLayer) map.removeLayer(baseLayer);
+  baseLayer = LAYERS[name]().addTo(map);
+  localStorage.setItem('cabine.layer', name);
+  document.querySelectorAll('#layers-menu [data-layer]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.layer === name)));
 }
 
-function markerIcon(cab, pending) {
+function closeLayersMenu() {
+  $('#layers-menu').hidden = true;
+  $('#btn-layers').setAttribute('aria-expanded', 'false');
+}
+
+$('#btn-layers').addEventListener('click', () => {
+  const menu = $('#layers-menu');
+  menu.hidden = !menu.hidden;
+  $('#btn-layers').setAttribute('aria-expanded', String(!menu.hidden));
+});
+$('#layers-menu').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-layer]');
+  if (!b) return;
+  setLayer(b.dataset.layer);
+  closeLayersMenu();
+});
+$('#btn-zoom-in').addEventListener('click', () => map.zoomIn());
+$('#btn-zoom-out').addEventListener('click', () => map.zoomOut());
+
+// Da vicino i segnaposto mostrano anche il nome della cabina, come i luoghi su Google Maps.
+function updateLabels() {
+  map.getContainer().classList.toggle('show-labels', map.getZoom() >= 17);
+}
+
+// Senza GPS (permesso negato o assente) al primo avvio inquadra tutte le cabine.
+function fitInitialView() {
+  if (state.fitted || state.position || !state.locateSettled || state.userMovedMap || !state.cabinets.length) return;
+  state.fitted = true;
+  map.fitBounds(L.latLngBounds(state.cabinets.map((c) => [c.lat, c.lng])), { padding: [60, 60], maxZoom: 16 });
+}
+
+function markerIcon(cab, pending, id) {
   const cls = pending ? 'pending' : `st-${cab.status}`;
-  const selected = (pending ? cab.clientId : cab.id) === state.selectedId ? ' selected' : '';
+  const selected = id === state.selectedId ? ' selected' : '';
   return L.divIcon({
-    className: `cab-marker${selected}`,
-    html: `<span class="badge ${cls}">${esc(TYPE_SHORT[cab.type] || '•')}</span>`,
-    iconSize: [36, 36],
-    iconAnchor: [18, 18],
+    className: `cab-marker ${cls}${selected}`,
+    html: `<div class="pin"><span>${esc(TYPE_SHORT[cab.type] || '•')}</span></div><div class="pin-label">${esc(cabinetTitle(cab))}</div>`,
+    iconSize: [34, 42],
+    iconAnchor: [17, 41],
   });
 }
 
@@ -353,11 +442,15 @@ function renderMarkers() {
   const add = (cab, pending) => {
     const id = pending ? cab.clientId : cab.id;
     const marker = L.marker([cab.lat, cab.lng], {
-      icon: markerIcon(cab, pending),
+      icon: markerIcon(cab, pending, id),
       title: cabinetTitle(cab),
       zIndexOffset: id === state.selectedId ? 1000 : 0,
     });
-    marker.on('click', () => openDetail(id));
+    marker.on('click', () => {
+      if (nav.cabId) return;
+      setFollow(false);
+      openDetail(id);
+    });
     marker.addTo(markersLayer);
     markers.set(id, marker);
   };
@@ -365,18 +458,78 @@ function renderMarkers() {
   for (const cab of state.pending) add(cab, true);
 }
 
-function updateMyPosition(pos) {
-  state.position = { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy };
+// ---------------------------------------------------------------------------
+// Posizione GPS (sempre attiva, come su Google Maps)
+// ---------------------------------------------------------------------------
+
+let watchId = null;
+const positionWaiters = [];
+
+function startWatch() {
+  if (!navigator.geolocation || watchId !== null) return;
+  watchId = navigator.geolocation.watchPosition(onPosition, onPositionError, { enableHighAccuracy: true, maximumAge: 3000 });
+}
+
+function onPosition(pos) {
+  const first = !state.position;
+  updateMyPosition(pos);
+  positionWaiters.splice(0).forEach((resolve) => resolve(state.position));
   const ll = [state.position.lat, state.position.lng];
+  if (first && !state.userMovedMap && !state.pick && !state.selectedId && !nav.cabId) {
+    // All'apertura la mappa parte da dove sei, con le cabine intorno.
+    map.setView(ll, 16);
+  } else if (state.follow && !state.pick) {
+    map.panTo(ll, { animate: true, duration: 0.5 });
+  }
+  if (nav.active) onNavPosition();
+}
+
+function onPositionError(err) {
+  if (state.position) return;
+  state.locateSettled = true;
+  fitInitialView();
+  if (err.code === 1) {
+    toast(insecureContext() ? 'Il GPS funziona solo se il sito è aperto in HTTPS'
+      : 'Consenti l\'accesso alla posizione per vedere dove sei sulla mappa', true, 6000);
+    navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+  }
+}
+
+function insecureContext() {
+  return location.protocol === 'http:' && location.hostname !== 'localhost';
+}
+
+function updateMyPosition(pos) {
+  const c = pos.coords;
+  state.position = { lat: c.latitude, lng: c.longitude, accuracy: c.accuracy, heading: c.heading, speed: c.speed };
+  state.positionAt = Date.now();
+  const ll = [c.latitude, c.longitude];
   if (!meMarker) {
-    meCircle = L.circle(ll, { radius: state.position.accuracy, color: '#1a73e8', weight: 1, fillOpacity: 0.12, interactive: false }).addTo(map);
-    meMarker = L.marker(ll, { icon: L.divIcon({ className: '', html: '<div class="me-marker"></div>', iconSize: [18, 18] }), interactive: false, keyboard: false }).addTo(map);
+    meCircle = L.circle(ll, { radius: c.accuracy, color: '#1a73e8', weight: 1, fillOpacity: 0.12, interactive: false }).addTo(map);
+    meMarker = L.marker(ll, {
+      icon: L.divIcon({ className: '', html: '<div class="me"><div class="me-cone" hidden></div><div class="me-dot"></div></div>', iconSize: [64, 64] }),
+      interactive: false,
+      keyboard: false,
+      zIndexOffset: 2000,
+    }).addTo(map);
   } else {
     meMarker.setLatLng(ll);
-    meCircle.setLatLng(ll).setRadius(state.position.accuracy);
+    meCircle.setLatLng(ll).setRadius(c.accuracy);
   }
-  $('#btn-locate').classList.add('active');
-  renderList();
+  // Direzione di marcia (disponibile quando ci si muove).
+  const cone = meMarker.getElement()?.querySelector('.me-cone');
+  if (cone) {
+    const moving = Number.isFinite(c.heading) && (c.speed === null || c.speed > 0.5);
+    cone.hidden = !moving;
+    if (moving) cone.style.transform = `rotate(${c.heading}deg)`;
+  }
+  $('#btn-locate').classList.add('has-fix');
+  // L'elenco è ordinato per distanza: lo aggiorniamo solo dopo spostamenti significativi.
+  if (!state.listPos || distance(state.listPos, state.position) > 25) {
+    state.listPos = { lat: c.latitude, lng: c.longitude };
+    renderList();
+  }
 }
 
 function getPosition() {
@@ -393,40 +546,64 @@ function getPosition() {
           2: 'Posizione non disponibile, riprova all\'aperto',
           3: 'Tempo scaduto per il GPS, riprova',
         }[err.code] || 'Impossibile ottenere la posizione';
-        reject(new Error(location.protocol === 'http:' && location.hostname !== 'localhost'
-          ? 'Il GPS funziona solo se il sito è aperto in HTTPS' : msg));
+        reject(new Error(insecureContext() ? 'Il GPS funziona solo se il sito è aperto in HTTPS' : msg));
       },
       { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 },
     );
   });
 }
 
-let watchId = null;
+// Posizione attuale per salvare una cabina: l'ultima lettura del GPS se è di pochi
+// secondi fa, altrimenti la prima nuova lettura disponibile.
+function freshPosition() {
+  if (state.position && Date.now() - state.positionAt < 10000) return Promise.resolve(state.position);
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const finish = (fn) => (value) => {
+      if (done) return;
+      done = true;
+      fn(value);
+    };
+    if (watchId !== null) positionWaiters.push(finish(resolve));
+    getPosition().then(finish(resolve), finish(reject));
+  });
+}
+
+function setFollow(on) {
+  state.follow = on;
+  $('#btn-locate').classList.toggle('following', on);
+}
+
 $('#btn-locate').addEventListener('click', async () => {
   try {
-    const pos = await getPosition();
-    map.flyTo([pos.lat, pos.lng], Math.max(map.getZoom(), 17));
-    if (watchId === null && navigator.geolocation) {
-      watchId = navigator.geolocation.watchPosition(updateMyPosition, () => {}, { enableHighAccuracy: true, maximumAge: 10000 });
-    }
+    const pos = state.position || await getPosition();
+    startWatch();
+    setFollow(true);
+    map.setView([pos.lat, pos.lng], Math.max(map.getZoom(), nav.active ? navZoom() : 17));
   } catch (err) {
     toast(err.message, true);
   }
 });
 
 // ---------------------------------------------------------------------------
-// Elenco e filtri
+// Ricerca, filtri ed elenco
 // ---------------------------------------------------------------------------
 
 function setupFilters() {
   const typeSel = $('#filter-type');
   typeSel.innerHTML = '<option value="">Tutti i tipi</option>' +
     Object.entries(TYPE_LABELS).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('');
-  const statusSel = $('#filter-status');
-  statusSel.innerHTML = '<option value="">Tutti gli stati</option>' +
-    Object.entries(STATUS_LABELS).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('');
-  for (const el of [typeSel, statusSel]) el.addEventListener('change', renderAll);
-  $('#search').addEventListener('input', renderAll);
+  typeSel.addEventListener('change', renderAll);
+
+  $('#chips').innerHTML = [['', 'Tutte'], ...Object.entries(STATUS_LABELS)].map(([k, v]) =>
+    `<button type="button" class="chip-btn ${k ? `st-${k}` : 'all'}" data-status="${k}" aria-pressed="${k === state.filterStatus}">${esc(v)}</button>`).join('');
+  $('#chips').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-status]');
+    if (!b) return;
+    state.filterStatus = b.dataset.status;
+    document.querySelectorAll('#chips [data-status]').forEach((c) => c.setAttribute('aria-pressed', String(c === b)));
+    renderAll();
+  });
 
   const form = $('#cabinet-form');
   form.type.innerHTML = Object.entries(TYPE_LABELS).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('');
@@ -436,7 +613,7 @@ function setupFilters() {
 function filteredCabinets() {
   const q = $('#search').value.trim().toLowerCase();
   const type = $('#filter-type').value;
-  const status = $('#filter-status').value;
+  const status = state.filterStatus;
   return state.cabinets.filter((c) => {
     if (type && c.type !== type) return false;
     if (status && c.status !== status) return false;
@@ -446,8 +623,7 @@ function filteredCabinets() {
   });
 }
 
-function renderList() {
-  const list = filteredCabinets();
+function sortByDistance(list) {
   const pos = state.position;
   const dist = new Map();
   if (pos) {
@@ -456,9 +632,16 @@ function renderList() {
   } else {
     list.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
+  return dist;
+}
+
+function renderList() {
+  const list = filteredCabinets();
+  const dist = sortByDistance(list);
+  const pos = state.position;
   const total = state.cabinets.length;
-  $('#list-count').textContent = (list.length === total ? `${total} cabine` : `${list.length} di ${total} cabine`) +
-    (pos ? ' · ordinate per distanza' : ' · le più recenti prima');
+  $('#list-count').textContent = (list.length === total ? `${total} cabine` : `${list.length} di ${total}`) +
+    (pos ? ' · le più vicine prima' : ' · le più recenti prima');
 
   const pendingItems = state.pending.map((c) => `
     <li><button class="item" data-id="${esc(c.clientId)}">
@@ -495,13 +678,18 @@ function renderList() {
 
 $('#list').addEventListener('click', (e) => {
   const btn = e.target.closest('.item');
-  if (!btn) return;
-  const cab = getCabinet(btn.dataset.id);
+  if (btn) focusCabinet(btn.dataset.id);
+});
+
+function focusCabinet(id) {
+  const cab = getCabinet(id);
   if (!cab) return;
   if (!isDesktop()) toggleList(false);
+  setFollow(false);
+  state.userMovedMap = true;
   map.setView([cab.lat, cab.lng], Math.max(map.getZoom(), 17));
-  openDetail(btn.dataset.id);
-});
+  openDetail(id);
+}
 
 function toggleList(force) {
   const panel = $('#list-panel');
@@ -518,6 +706,69 @@ function toggleList(force) {
 }
 $('#btn-list').addEventListener('click', () => toggleList());
 
+// Barra di ricerca con suggerimenti: cabine corrispondenti e ricerca di un indirizzo.
+const searchInput = $('#search');
+
+function clearSearch() {
+  searchInput.value = '';
+  $('#search-clear').hidden = true;
+  $('#suggestions').hidden = true;
+  renderAll();
+}
+
+function renderSuggestions() {
+  const box = $('#suggestions');
+  const q = searchInput.value.trim();
+  if (!q || document.activeElement !== searchInput) {
+    box.hidden = true;
+    return;
+  }
+  const list = filteredCabinets();
+  const dist = sortByDistance(list);
+  box.innerHTML = list.slice(0, 5).map((c) => `
+    <button type="button" class="suggestion" role="option" data-id="${esc(c.id)}">
+      <span class="badge st-${esc(c.status)}">${esc(TYPE_SHORT[c.type])}</span>
+      <span class="suggestion-body"><strong>${esc(cabinetTitle(c))}</strong><span>${esc(c.address || STATUS_LABELS[c.status])}</span></span>
+      ${dist.has(c) ? `<span class="dist">${fmtDistance(dist.get(c))}</span>` : ''}
+    </button>`).join('') + `
+    <button type="button" class="suggestion" role="option" data-place="1">
+      ${icon('search')}
+      <span class="suggestion-body"><strong>Cerca “${esc(q)}”</strong><span>Indirizzo o luogo sulla mappa</span></span>
+    </button>`;
+  box.hidden = false;
+}
+
+searchInput.addEventListener('input', () => {
+  $('#search-clear').hidden = !searchInput.value;
+  renderAll();
+});
+searchInput.addEventListener('focus', renderSuggestions);
+searchInput.addEventListener('blur', () => setTimeout(() => { $('#suggestions').hidden = true; }, 150));
+searchInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    $('#suggestions .suggestion')?.click();
+  } else if (e.key === 'Escape') {
+    searchInput.blur();
+  }
+});
+$('#search-clear').addEventListener('click', () => {
+  clearSearch();
+  searchInput.focus();
+});
+// Evita che il campo perda il fuoco prima che il tocco sul suggerimento venga registrato.
+$('#suggestions').addEventListener('mousedown', (e) => e.preventDefault());
+$('#suggestions').addEventListener('click', (e) => {
+  const b = e.target.closest('.suggestion');
+  if (!b) return;
+  const q = searchInput.value.trim();
+  searchInput.blur();
+  clearSearch();
+  if (b.dataset.id) focusCabinet(b.dataset.id);
+  else searchPlace(q);
+});
+
+let placeMarker;
 async function searchPlace(q) {
   try {
     const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=it&accept-language=it&q=${encodeURIComponent(q)}`;
@@ -526,8 +777,24 @@ async function searchPlace(q) {
       toast('Luogo non trovato');
       return;
     }
+    const lat = Number(results[0].lat);
+    const lng = Number(results[0].lon);
     if (!isDesktop()) toggleList(false);
-    map.flyTo([Number(results[0].lat), Number(results[0].lon)], 17);
+    setFollow(false);
+    state.userMovedMap = true;
+    placeMarker?.remove();
+    placeMarker = L.marker([lat, lng], {
+      icon: L.divIcon({ className: '', html: '<div class="place-pin"></div>', iconSize: [26, 26], iconAnchor: [13, 31], popupAnchor: [0, -30] }),
+    }).addTo(map);
+    const popup = document.createElement('div');
+    popup.innerHTML = `<strong>${esc(results[0].display_name.split(',').slice(0, 3).join(','))}</strong><br>
+      <button class="btn btn-small btn-primary" type="button">${icon('plus')} Aggiungi cabina qui</button>`;
+    popup.querySelector('button').addEventListener('click', () => {
+      map.closePopup();
+      openForm({ mode: 'create', lat, lng, accuracy: null });
+    });
+    map.setView([lat, lng], 17);
+    placeMarker.bindPopup(popup).openPopup();
   } catch {
     toast('Ricerca indirizzi non disponibile', true);
   }
@@ -537,10 +804,12 @@ function renderAll() {
   fitInitialView();
   renderMarkers();
   renderList();
-  if (state.selectedId && !state.pick) {
+  renderSuggestions();
+  if (state.selectedId && !state.pick && !nav.cabId) {
     if (getCabinet(state.selectedId)) renderDetail();
     else closeDetail();
   }
+  if (nav.cabId && !getCabinet(nav.cabId)) closeRoute();
   renderSync();
 }
 
@@ -584,6 +853,14 @@ function renderDetail() {
       </div>
       <button class="icon-btn" id="sheet-close" type="button" aria-label="Chiudi">${icon('close')}</button>
     </div>
+    <div class="quick-actions">
+      <button class="btn btn-route" id="btn-directions" type="button">${icon('directions')} Indicazioni</button>
+      <a class="btn" href="https://www.google.com/maps/dir/?api=1&destination=${dest}" target="_blank" rel="noopener">${icon('nav')} Google Maps</a>
+      <a class="btn" href="https://waze.com/ul?ll=${dest}&navigate=yes" target="_blank" rel="noopener">${icon('nav')} Waze</a>
+      ${pending ? '' : `
+      <button class="btn" id="btn-edit" type="button">${icon('edit')} Modifica</button>
+      <button class="btn" id="btn-move" type="button">${icon('move')} Sposta</button>`}
+    </div>
     ${pending ? '<p class="warning small">Salvata solo su questo telefono: verrà inviata alla squadra appena torna la connessione.</p>' : ''}
     <section>
       <h3>Posizione</h3>
@@ -593,13 +870,6 @@ function renderDetail() {
         <button class="btn btn-small" id="btn-copy" type="button">${icon('copy')} Copia</button>
       </div>
       <p class="muted small">${cab.accuracy ? `Precisione GPS ±${cab.accuracy} m` : 'Posizione scelta sulla mappa'}${distanceText}</p>
-      <div class="actions">
-        <a class="btn btn-primary" href="https://www.google.com/maps/dir/?api=1&destination=${dest}" target="_blank" rel="noopener">${icon('nav')} Google Maps</a>
-        <a class="btn" href="https://waze.com/ul?ll=${dest}&navigate=yes" target="_blank" rel="noopener">${icon('nav')} Waze</a>
-        ${pending ? '' : `
-        <button class="btn" id="btn-edit" type="button">${icon('edit')} Modifica</button>
-        <button class="btn" id="btn-move" type="button">${icon('move')} Sposta</button>`}
-      </div>
     </section>
     ${cab.notes ? `<section><h3>Note</h3><p class="notes">${esc(cab.notes)}</p></section>` : ''}
     ${pending ? '' : `
@@ -640,6 +910,7 @@ function renderDetail() {
   if (!isDesktop()) $('#fabs').hidden = true;
 
   $('#sheet-close').addEventListener('click', closeDetail);
+  $('#btn-directions').addEventListener('click', () => openRoute(state.selectedId));
   $('#btn-copy').addEventListener('click', () => copyText(`${fmtCoord(cab.lat)}, ${fmtCoord(cab.lng)}`));
   if (pending) return;
 
@@ -757,7 +1028,7 @@ $('#add-dialog').addEventListener('close', async () => {
   if (choice === 'gps') {
     toast('Rilevamento posizione GPS…', false, 20000);
     try {
-      const pos = await getPosition();
+      const pos = await freshPosition();
       $('#toast').hidden = true;
       map.setView([pos.lat, pos.lng], Math.max(map.getZoom(), 18));
       openForm({ mode: 'create', lat: pos.lat, lng: pos.lng, accuracy: Math.round(pos.accuracy) });
@@ -774,6 +1045,7 @@ $('#add-dialog').addEventListener('close', async () => {
 
 function pickLocation(text) {
   return new Promise((resolve) => {
+    setFollow(false);
     state.pick = resolve;
     $('#pick-text').textContent = text;
     $('#crosshair').hidden = false;
@@ -935,6 +1207,288 @@ function handleSaveError(err) {
 }
 
 // ---------------------------------------------------------------------------
+// Percorsi in auto e a piedi, navigazione passo passo
+// ---------------------------------------------------------------------------
+
+const ARRIVE_M = 25;
+const REROUTE_EVERY_MS = 10000;
+
+function maneuverSvg(name) {
+  const right = name.endsWith('-r');
+  return `<svg class="ico${right ? ' flip' : ''}"><use href="#m-${name.replace(/-r$/, '')}"/></svg>`;
+}
+
+function navZoom() {
+  return nav.mode === 'car' ? 17 : 18;
+}
+
+function clockIn(seconds) {
+  return new Date(Date.now() + seconds * 1000).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+}
+
+async function openRoute(id) {
+  const cab = getCabinet(id);
+  if (!cab) return;
+  nav.cabId = id;
+  nav.mode = localStorage.getItem('cabine.mode') === 'foot' ? 'foot' : 'car';
+  nav.routes = {};
+  nav.errors = {};
+  setFollow(false);
+  closeLayersMenu();
+  if (!isDesktop()) toggleList(false);
+  document.body.classList.add('routing');
+  $('#sheet').hidden = true;
+  $('#fabs').hidden = false;
+  $('#top').hidden = true;
+  $('#btn-layers').hidden = true;
+  $('#route-dest').textContent = cabinetTitle(cab);
+  $('#route-top').hidden = false;
+  $('#route-panel').hidden = false;
+  renderRoute();
+
+  let from = state.position;
+  if (!from) {
+    try {
+      from = await getPosition();
+      startWatch();
+    } catch (err) {
+      if (nav.cabId !== id) return;
+      nav.errors = { car: err.message, foot: err.message };
+      renderRoute();
+      return;
+    }
+  }
+  if (nav.cabId !== id) return;
+  await computeRoutes(from, ['car', 'foot']);
+  if (nav.cabId === id && !nav.active) fitRoute();
+}
+
+async function computeRoutes(from, modes) {
+  nav.abort?.abort();
+  const ctrl = new AbortController();
+  nav.abort = ctrl;
+  const cab = getCabinet(nav.cabId);
+  await Promise.all(modes.map(async (mode) => {
+    try {
+      nav.routes[mode] = await Routing.fetchRoute(mode, from, cab, ctrl.signal);
+      delete nav.errors[mode];
+    } catch (err) {
+      if (err.name === 'AbortError') return;
+      nav.routes[mode] = null;
+      nav.errors[mode] = navigator.onLine === false ? 'Sei offline: impossibile calcolare il percorso' : err.message;
+    }
+    if (ctrl.signal.aborted || !nav.cabId) return;
+    if (nav.active) renderNav();
+    else renderRoute();
+    drawRoute();
+  }));
+}
+
+function renderRoute() {
+  const cab = getCabinet(nav.cabId);
+  if (!cab) return;
+  for (const mode of ['car', 'foot']) {
+    const r = nav.routes[mode];
+    $(`.mode[data-mode="${mode}"]`).setAttribute('aria-selected', String(mode === nav.mode));
+    $(`[data-time="${mode}"]`).textContent = r ? Routing.fmtDuration(r.duration) : nav.errors[mode] ? '–' : '…';
+  }
+  const panel = $('#route-panel');
+  const stepsOpen = $('details', panel)?.open || false;
+  const r = nav.routes[nav.mode];
+  const err = nav.errors[nav.mode];
+  const dest = `${cab.lat},${cab.lng}`;
+  const external = `
+    <a class="btn" href="https://www.google.com/maps/dir/?api=1&destination=${dest}&travelmode=${nav.mode === 'car' ? 'driving' : 'walking'}" target="_blank" rel="noopener">${icon('nav')} Google Maps</a>
+    ${nav.mode === 'car' ? `<a class="btn" href="https://waze.com/ul?ll=${dest}&navigate=yes" target="_blank" rel="noopener">${icon('nav')} Waze</a>` : ''}`;
+  const how = nav.mode === 'car' ? 'In auto' : 'A piedi';
+
+  if (r) {
+    panel.innerHTML = `
+      <div class="route-summary">
+        <span class="route-time">${Routing.fmtDuration(r.duration)}</span>
+        <span class="muted">(${fmtDistance(r.distance)})</span>
+      </div>
+      <p class="muted small">${how} · arrivo previsto alle ${clockIn(r.duration)}</p>
+      <div class="route-actions">
+        <button class="btn btn-route" id="btn-start" type="button">${icon('nav')} Avvia</button>
+        ${external}
+      </div>
+      <details${stepsOpen ? ' open' : ''}>
+        <summary>Passaggi (${r.steps.length})</summary>
+        <ol class="steps">
+          ${r.steps.map((s) => `<li>${maneuverSvg(s.icon)}<div><div>${esc(s.text)}</div>${s.distance ? `<div class="step-dist">${fmtDistance(s.distance)}</div>` : ''}</div></li>`).join('')}
+        </ol>
+      </details>`;
+    $('#btn-start').addEventListener('click', startNav);
+  } else if (err) {
+    const straight = state.position ? `<p class="muted small">In linea d'aria: ${fmtDistance(distance(state.position, cab))}</p>` : '';
+    panel.innerHTML = `
+      <p class="warning small">${esc(err)}</p>
+      ${straight}
+      <p class="muted small">Puoi comunque farti guidare dall'app di navigazione.</p>
+      <div class="route-actions">${external}</div>`;
+  } else {
+    panel.innerHTML = `
+      <p><span class="spinner"></span> Calcolo del percorso ${nav.mode === 'car' ? 'in auto' : 'a piedi'}…</p>
+      <div class="route-actions">${external}</div>`;
+  }
+}
+
+function drawRoute() {
+  routeLayer.clearLayers();
+  const r = nav.routes[nav.mode];
+  const cab = getCabinet(nav.cabId);
+  if (!r || !cab) return;
+  const line = r.coords.map((c) => [c.lat, c.lng]);
+  if (nav.mode === 'car') {
+    L.polyline(line, { color: '#1557b0', weight: 10, opacity: 1, lineJoin: 'round', interactive: false }).addTo(routeLayer);
+    L.polyline(line, { color: '#1a73e8', weight: 7, opacity: 1, lineJoin: 'round', interactive: false }).addTo(routeLayer);
+  } else {
+    L.polyline(line, { color: '#1a73e8', weight: 7, opacity: 1, dashArray: '0 12', lineCap: 'round', interactive: false }).addTo(routeLayer);
+  }
+  // Ultimo tratto: dalla fine della strada fino alla cabina.
+  const end = r.coords[r.coords.length - 1];
+  if (Routing.haversine(end, cab) > 5) {
+    L.polyline([[end.lat, end.lng], [cab.lat, cab.lng]], { color: '#5f6368', weight: 3, dashArray: '2 8', interactive: false }).addTo(routeLayer);
+  }
+}
+
+function fitRoute() {
+  const cab = getCabinet(nav.cabId);
+  if (!cab) return;
+  const r = nav.routes[nav.mode];
+  const points = r ? r.coords.map((c) => [c.lat, c.lng]) : [];
+  points.push([cab.lat, cab.lng]);
+  if (state.position) points.push([state.position.lat, state.position.lng]);
+  const desktop = isDesktop();
+  const top = desktop ? 20 : $('#route-top').offsetHeight + 20;
+  const bottom = desktop ? 20 : $('#route-panel').offsetHeight + 20;
+  map.fitBounds(L.latLngBounds(points), {
+    paddingTopLeft: [desktop ? 440 : 30, top],
+    paddingBottomRight: [30, bottom],
+    maxZoom: 17,
+  });
+}
+
+document.querySelectorAll('.mode').forEach((b) => b.addEventListener('click', () => {
+  nav.mode = b.dataset.mode;
+  localStorage.setItem('cabine.mode', nav.mode);
+  renderRoute();
+  drawRoute();
+  fitRoute();
+}));
+
+$('#route-back').addEventListener('click', () => closeRoute());
+
+function closeRoute() {
+  stopNav();
+  nav.abort?.abort();
+  const id = nav.cabId;
+  nav.cabId = null;
+  nav.routes = {};
+  nav.errors = {};
+  routeLayer.clearLayers();
+  document.body.classList.remove('routing');
+  $('#route-top').hidden = true;
+  $('#route-panel').hidden = true;
+  $('#top').hidden = false;
+  $('#btn-layers').hidden = false;
+  if (id && getCabinet(id)) openDetail(id);
+}
+
+function startNav() {
+  if (!nav.routes[nav.mode]) return;
+  nav.active = true;
+  nav.lastReroute = Date.now();
+  document.body.classList.add('navigating');
+  $('#route-top').hidden = true;
+  $('#route-panel').hidden = true;
+  $('#nav-banner').hidden = false;
+  $('#nav-bottom').hidden = false;
+  setFollow(true);
+  if (state.position) map.setView([state.position.lat, state.position.lng], navZoom());
+  requestWakeLock();
+  renderNav();
+}
+
+function stopNav() {
+  if (!nav.active) return;
+  nav.active = false;
+  document.body.classList.remove('navigating');
+  $('#nav-banner').hidden = true;
+  $('#nav-bottom').hidden = true;
+  releaseWakeLock();
+  setFollow(false);
+}
+
+function onNavPosition() {
+  const r = nav.routes[nav.mode];
+  const cab = getCabinet(nav.cabId);
+  if (!r || !cab) return;
+  const pos = state.position;
+  if (distance(pos, cab) <= ARRIVE_M) {
+    toast(`Sei arrivato: ${cabinetTitle(cab)}`, false, 5000);
+    closeRoute();
+    return;
+  }
+  const p = Routing.progress(r, pos);
+  // Fuori strada: ricalcola il percorso dalla posizione attuale (al massimo ogni 10 secondi).
+  const limit = Math.max(nav.mode === 'car' ? 50 : 30, pos.accuracy || 0);
+  if (p.offRoute > limit && !nav.rerouting && Date.now() - nav.lastReroute > REROUTE_EVERY_MS) {
+    nav.lastReroute = Date.now();
+    nav.rerouting = true;
+    renderNav(p);
+    computeRoutes(pos, [nav.mode]).finally(() => {
+      nav.rerouting = false;
+      if (nav.active) renderNav();
+    });
+    return;
+  }
+  renderNav(p);
+}
+
+function renderNav(p) {
+  const r = nav.routes[nav.mode];
+  if (!r) return;
+  if (!p) p = state.position ? Routing.progress(r, state.position) : Routing.progress(r, r.coords[0]);
+  const next = p.next;
+  $('#nav-banner').innerHTML = nav.rerouting
+    ? '<span class="spinner"></span><div class="nav-text">Ricalcolo del percorso…</div>'
+    : `${maneuverSvg(next.icon)}<div><div class="nav-dist">${fmtDistance(p.toNext)}</div><div class="nav-text">${esc(next.text)}</div></div>`;
+  $('#nav-bottom').innerHTML = `
+    <div>
+      <span class="route-time">${Routing.fmtDuration(p.remainingTime)}</span>
+      <div class="muted small">${fmtDistance(p.remaining)} · arrivo alle ${clockIn(p.remainingTime)}</div>
+    </div>
+    <button class="btn" id="nav-exit" type="button">Esci</button>`;
+  $('#nav-exit').addEventListener('click', () => {
+    stopNav();
+    $('#route-top').hidden = false;
+    $('#route-panel').hidden = false;
+    renderRoute();
+    fitRoute();
+  });
+}
+
+// Durante la navigazione lo schermo resta acceso.
+async function requestWakeLock() {
+  try {
+    nav.wakeLock = await navigator.wakeLock?.request('screen');
+  } catch {
+    nav.wakeLock = null;
+  }
+}
+
+function releaseWakeLock() {
+  nav.wakeLock?.release().catch(() => {});
+  nav.wakeLock = null;
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && nav.active) requestWakeLock();
+});
+
+// ---------------------------------------------------------------------------
 // Menu ed esportazioni
 // ---------------------------------------------------------------------------
 
@@ -1022,7 +1576,8 @@ function exportKml() {
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape' || document.querySelector('dialog[open]')) return;
   if (state.pick) endPick(null);
-  else if (state.selectedId) closeDetail();
+  else if (nav.cabId && !nav.active) closeRoute();
+  else if (state.selectedId && !nav.cabId) closeDetail();
   else if (!isDesktop()) toggleList(false);
 });
 

@@ -119,17 +119,24 @@ function sessionCookie(req, value, maxAgeSeconds) {
   return `sid=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}` + (isHttps(req) ? '; Secure' : '');
 }
 
-// Limite tentativi di accesso: 10 ogni 15 minuti per IP.
-const loginAttempts = new Map();
-function loginAllowed(ip) {
-  const now = Date.now();
-  const entry = loginAttempts.get(ip);
-  if (!entry || entry.reset < now) {
-    loginAttempts.set(ip, { count: 1, reset: now + 15 * 60e3 });
-    return true;
+// Dopo 10 password sbagliate in 15 minuti dallo stesso IP l'accesso viene bloccato.
+// Contano solo gli errori: molti colleghi possono uscire dallo stesso IP (rete mobile, ufficio).
+const loginFailures = new Map();
+function loginBlocked(ip) {
+  const entry = loginFailures.get(ip);
+  if (!entry) return false;
+  if (entry.reset < Date.now()) {
+    loginFailures.delete(ip);
+    return false;
   }
-  entry.count += 1;
-  return entry.count <= 10;
+  return entry.count >= 10;
+}
+
+function recordLoginFailure(ip) {
+  const now = Date.now();
+  const entry = loginFailures.get(ip);
+  if (!entry || entry.reset < now) loginFailures.set(ip, { count: 1, reset: now + 15 * 60e3 });
+  else entry.count += 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -240,12 +247,14 @@ async function handleApi(req, res, url) {
   const method = req.method;
 
   if (pathname === '/api/login' && method === 'POST') {
-    const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
-    if (!loginAllowed(ip)) throw new HttpError(429, 'Troppi tentativi, riprova tra qualche minuto');
+    // L'ultimo indirizzo è quello aggiunto dal proxy (Render, Caddy): i precedenti li sceglie il client.
+    const ip = req.headers['x-forwarded-for']?.split(',').pop().trim() || req.socket.remoteAddress;
+    if (loginBlocked(ip)) throw new HttpError(429, 'Troppi tentativi, riprova tra qualche minuto');
     const body = await readJson(req);
     const name = cleanText(body.name, 40);
     if (!name) throw new HttpError(400, 'Inserisci il tuo nome');
     if (TEAM_PASSWORD && !passwordMatches(body.password || '')) {
+      recordLoginFailure(ip);
       throw new HttpError(401, 'Password di squadra errata');
     }
     const cookie = sessionCookie(req, createToken(name), SESSION_DAYS * 86400);
@@ -439,16 +448,16 @@ async function serveStatic(req, res, url) {
 
 const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
-  // Le tile di OpenStreetMap e Nominatim richiedono il Referer (basta l'origine).
+  // I servizi di mappe, indirizzi e percorsi richiedono il Referer (basta l'origine).
   'Referrer-Policy': 'strict-origin-when-cross-origin',
   'X-Frame-Options': 'DENY',
-  'Permissions-Policy': 'geolocation=(self), camera=(self)',
+  'Permissions-Policy': 'geolocation=(self), camera=(self), screen-wake-lock=(self)',
   'Content-Security-Policy': [
     "default-src 'self'",
     "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: blob: https://tile.openstreetmap.org https://server.arcgisonline.com",
-    "connect-src 'self' https://nominatim.openstreetmap.org",
+    "img-src 'self' data: blob: https://*.basemaps.cartocdn.com https://tile.openstreetmap.org https://server.arcgisonline.com",
+    "connect-src 'self' https://nominatim.openstreetmap.org https://routing.openstreetmap.de",
     "frame-ancestors 'none'",
     "base-uri 'none'",
     "form-action 'self'",

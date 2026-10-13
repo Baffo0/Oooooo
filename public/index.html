@@ -20,16 +20,28 @@
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
     <symbol id="i-locate" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></symbol>
     <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5M11 6l-6 6 6 6"/></symbol>
     <symbol id="i-nav" viewBox="0 0 24 24"><path d="M3 11l18-8-8 18-2-8z"/></symbol>
+    <symbol id="i-directions" viewBox="0 0 24 24"><path d="M12 2.5l9.5 9.5-9.5 9.5L2.5 12z"/><path d="M9 14v-2.5a1.5 1.5 0 011.5-1.5H15M13 8l2 2-2 2"/></symbol>
     <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/></symbol>
     <symbol id="i-move" viewBox="0 0 24 24"><path d="M12 2v20M2 12h20M12 2l-3 3M12 2l3 3M12 22l-3-3M12 22l3-3M2 12l3-3M2 12l3 3M22 12l-3-3M22 12l-3 3"/></symbol>
     <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></symbol>
     <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></symbol>
     <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/></symbol>
-    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/></symbol>
     <symbol id="i-gps" viewBox="0 0 24 24"><path d="M12 21s-7-6.5-7-12a7 7 0 0114 0c0 5.5-7 12-7 12z"/><circle cx="12" cy="9" r="2.5"/></symbol>
     <symbol id="i-map" viewBox="0 0 24 24"><path d="M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2z"/><path d="M9 4v14M15 6v14"/></symbol>
     <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/></symbol>
+    <symbol id="i-car" viewBox="0 0 24 24"><path d="M5 16V11l2-5h10l2 5v5M3 16h18v3H3zM5 11h14"/><circle cx="7.5" cy="13.5" r=".5"/><circle cx="16.5" cy="13.5" r=".5"/></symbol>
+    <symbol id="i-walk" viewBox="0 0 24 24"><circle cx="13" cy="4" r="2"/><path d="M10 21l2-6-3-3 1-5 4 3 3 1M9 12l-2 3M12 15l3 6"/></symbol>
+    <!-- Frecce delle manovre (le versioni a destra sono specchiate via CSS) -->
+    <symbol id="m-straight" viewBox="0 0 24 24"><path d="M12 21V4M6 10l6-6 6 6"/></symbol>
+    <symbol id="m-turn" viewBox="0 0 24 24"><path d="M17 21V12a3 3 0 00-3-3H5M9 4L4 9l5 5"/></symbol>
+    <symbol id="m-slight" viewBox="0 0 24 24"><path d="M16 21v-7L8 6M7 12V5h7"/></symbol>
+    <symbol id="m-sharp" viewBox="0 0 24 24"><path d="M17 3v18M17 8L6 19M6 12v7h7"/></symbol>
+    <symbol id="m-uturn" viewBox="0 0 24 24"><path d="M16 21V9a5 5 0 00-10 0v4M2 9l4 4 4-4"/></symbol>
+    <symbol id="m-roundabout" viewBox="0 0 24 24"><circle cx="12" cy="10" r="4"/><path d="M12 21v-7M12 6V2M9 4l3-2 3 2"/></symbol>
+    <symbol id="m-flag" viewBox="0 0 24 24"><path d="M5 21V4M5 4h11l-2 4 2 4H5"/></symbol>
   </svg>
 
   <!-- Accesso -->
@@ -51,31 +63,14 @@
 
   <!-- Applicazione -->
   <div id="app" class="app" hidden>
-    <header class="topbar">
-      <button id="btn-list" class="icon-btn" type="button" aria-label="Elenco cabine" aria-expanded="false">
-        <svg class="ico"><use href="#i-list"/></svg>
-      </button>
-      <div class="brand">
-        <strong>Cabine Fibra</strong>
-        <span id="sync-status" class="sync"></span>
-      </div>
-      <button id="btn-menu" class="icon-btn" type="button" aria-label="Menu">
-        <svg class="ico"><use href="#i-user"/></svg>
-      </button>
-    </header>
-
     <main class="main">
       <aside id="list-panel" class="list-panel" aria-label="Elenco cabine">
-        <div class="list-tools">
-          <div class="search">
-            <svg class="ico"><use href="#i-search"/></svg>
-            <input id="search" type="search" placeholder="Cerca codice, indirizzo, note…" autocomplete="off">
+        <div class="list-head">
+          <div>
+            <h2>Cabine</h2>
+            <p id="list-count" class="muted small"></p>
           </div>
-          <div class="filters">
-            <select id="filter-type" aria-label="Filtra per tipo"></select>
-            <select id="filter-status" aria-label="Filtra per stato"></select>
-          </div>
-          <p id="list-count" class="muted small"></p>
+          <select id="filter-type" aria-label="Filtra per tipo"></select>
         </div>
         <ul id="list" class="list"></ul>
         <div id="list-empty" class="list-empty" hidden></div>
@@ -83,6 +78,32 @@
 
       <div class="map-wrap">
         <div id="map" class="map"></div>
+
+        <div id="top" class="top">
+          <div class="searchbar">
+            <button id="btn-list" class="icon-btn" type="button" aria-label="Elenco cabine" aria-expanded="false">
+              <svg class="ico"><use href="#i-list"/></svg>
+            </button>
+            <input id="search" type="search" placeholder="Cerca cabine o indirizzi" autocomplete="off" enterkeyhint="search" aria-label="Cerca cabine o indirizzi" aria-controls="suggestions">
+            <button id="search-clear" class="icon-btn" type="button" aria-label="Cancella ricerca" hidden>
+              <svg class="ico"><use href="#i-close"/></svg>
+            </button>
+            <button id="btn-menu" class="avatar" type="button" aria-label="Menu"></button>
+          </div>
+          <div id="suggestions" class="suggestions" role="listbox" hidden></div>
+          <div id="chips" class="chips" role="group" aria-label="Filtra per stato"></div>
+          <p id="sync-pill" class="sync-pill" hidden></p>
+        </div>
+
+        <button id="btn-layers" class="map-btn" type="button" aria-label="Tipo di mappa" aria-expanded="false">
+          <svg class="ico"><use href="#i-layers"/></svg>
+        </button>
+        <div id="layers-menu" class="layers-menu" hidden>
+          <button type="button" data-layer="strade">Mappa</button>
+          <button type="button" data-layer="satellite">Satellite</button>
+          <button type="button" data-layer="osm">OpenStreetMap</button>
+        </div>
+
         <div id="crosshair" class="crosshair" hidden aria-hidden="true"></div>
         <div id="pick-bar" class="pick-bar" hidden>
           <p id="pick-text">Sposta la mappa per mettere il mirino sulla cabina</p>
@@ -91,15 +112,49 @@
             <button id="pick-confirm" class="btn btn-primary" type="button">Conferma posizione</button>
           </div>
         </div>
+
         <div id="fabs" class="fabs">
-          <button id="btn-locate" class="fab fab-small" type="button" aria-label="La mia posizione">
+          <button id="btn-zoom-in" class="fab fab-small desktop-only" type="button" aria-label="Ingrandisci">
+            <svg class="ico"><use href="#i-plus"/></svg>
+          </button>
+          <button id="btn-zoom-out" class="fab fab-small desktop-only" type="button" aria-label="Riduci">
+            <svg class="ico" viewBox="0 0 24 24"><path d="M5 12h14"/></svg>
+          </button>
+          <button id="btn-locate" class="fab fab-small" type="button" aria-label="Centra sulla mia posizione">
             <svg class="ico"><use href="#i-locate"/></svg>
           </button>
           <button id="btn-add" class="fab" type="button" aria-label="Aggiungi cabina">
             <svg class="ico"><use href="#i-plus"/></svg>
           </button>
         </div>
+
         <section id="sheet" class="sheet" hidden aria-live="polite"></section>
+
+        <!-- Percorso verso una cabina -->
+        <div id="route-top" class="route-top" hidden>
+          <div class="route-top-row">
+            <button id="route-back" class="icon-btn" type="button" aria-label="Chiudi percorso">
+              <svg class="ico"><use href="#i-back"/></svg>
+            </button>
+            <div class="route-ends">
+              <span class="muted small">Dalla tua posizione a</span>
+              <strong id="route-dest"></strong>
+            </div>
+          </div>
+          <div class="modes" role="tablist" aria-label="Mezzo">
+            <button class="mode" type="button" role="tab" data-mode="car">
+              <svg class="ico"><use href="#i-car"/></svg><span data-time="car">…</span>
+            </button>
+            <button class="mode" type="button" role="tab" data-mode="foot">
+              <svg class="ico"><use href="#i-walk"/></svg><span data-time="foot">…</span>
+            </button>
+          </div>
+        </div>
+        <section id="route-panel" class="sheet route-panel" hidden aria-live="polite"></section>
+
+        <!-- Navigazione passo passo -->
+        <div id="nav-banner" class="nav-banner" hidden aria-live="polite"></div>
+        <div id="nav-bottom" class="nav-bottom" hidden></div>
       </div>
     </main>
 
@@ -158,6 +213,7 @@
     <dialog id="menu-dialog" class="dialog">
       <form method="dialog" class="dialog-body">
         <h2>Ciao <span id="menu-name"></span></h2>
+        <p id="sync-status" class="muted small"></p>
         <p class="muted small">Scarica una copia di tutte le cabine (backup o per aprirle in altri programmi).</p>
         <div class="stack">
           <button class="btn" value="csv">Esporta Excel (CSV)</button>
@@ -177,6 +233,7 @@
   </div>
 
   <script src="vendor/leaflet/leaflet.js"></script>
+  <script src="routing.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

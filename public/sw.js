@@ -2,14 +2,15 @@
 
 // Rende l'app apribile anche senza connessione: i file dell'interfaccia vengono
 // presi dalla rete quando possibile e dalla cache quando si è offline.
-// Dati (/api) e tile della mappa non passano dalla cache.
+// Dati (/api), tile della mappa e percorsi non passano dalla cache.
 
-const CACHE = 'cabine-v1';
+const CACHE = 'cabine-v2';
 const SHELL = [
   './',
   'index.html',
   'style.css',
   'app.js',
+  'routing.js',
   'manifest.webmanifest',
   'icons/icon.svg',
   'icons/icon-192.png',

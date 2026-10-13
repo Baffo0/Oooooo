@@ -7,10 +7,12 @@ Pensata per il telefono, in strada: si apre dal browser e si può aggiungere all
 
 ## Cosa fa
 
+- **Si apre come Google Maps**: la mappa parte da dove sei (pallino blu, con la direzione di marcia quando ti muovi) e intorno vedi i segnaposto delle cabine. Avvicinandoti compare anche il nome di ogni cabina.
+- **Mappa stradale, satellite con i nomi delle vie oppure OpenStreetMap**, con i segnaposto colorati per stato: blu *da fare*, arancione *in corso*, verde *fatto*, rosso *problema*.
+- **Barra di ricerca con suggerimenti**: trova le cabine per codice, indirizzo o note, oppure cerca un indirizzo qualsiasi e aggiungi una cabina in quel punto. Sotto la barra ci sono i filtri rapidi per stato.
+- **Percorsi in auto e a piedi dentro l'app**: tempo, distanza, orario di arrivo ed elenco delle svolte in italiano. Con **Avvia** parte la navigazione passo passo: la mappa ti segue, mostra la prossima svolta e la distanza, e ricalcola il percorso se sbagli strada. Lo schermo resta acceso. Per la guida con la voce restano i tasti per Google Maps e Waze.
 - **Salva la posizione con il GPS** ("Sono qui adesso") oppure **scegliendo il punto sulla mappa** con il mirino. Su computer basta il tasto destro sulla mappa, su telefono una pressione prolungata.
-- **Mappa stradale o satellitare**, con i marcatori colorati per stato: blu *da fare*, arancione *in corso*, verde *fatto*, rosso *problema*.
-- **Scheda della cabina**: codice, tipo, indirizzo (rilevato in automatico), note, precisione del GPS, chi l'ha aggiunta e quando.
-- **Portami lì**: un tasto apre la navigazione in Google Maps o in Waze.
+- **Scheda della cabina**: codice, tipo, indirizzo (rilevato in automatico), note, precisione del GPS, distanza da te, chi l'ha aggiunta e quando.
 - **Foto** (fino a 6 per cabina): vengono ridotte sul telefono prima dell'invio, così si caricano anche con poco segnale.
 - **Diario interventi**: ogni collega annota cosa ha fatto, con nome e data.
 - **Elenco con ricerca e filtri**, ordinato per distanza da dove sei.
@@ -81,4 +83,15 @@ npm test
 
 - `server.js`: server HTTP e API, usa solo moduli integrati di Node.js.
 - `public/`: l'interfaccia (HTML, CSS, JavaScript), con [Leaflet](https://leafletjs.com) incluso in `public/vendor/`.
-- Mappe © [OpenStreetMap](https://www.openstreetmap.org/copyright), immagini satellitari Esri, indirizzi tramite [Nominatim](https://nominatim.org).
+- `public/routing.js`: calcolo dei percorsi, indicazioni in italiano e avanzamento durante la navigazione.
+
+## Servizi di mappe usati
+
+Sono tutti gratuiti e non serve nessuna chiave o registrazione:
+
+- mappa stradale: [CARTO](https://carto.com/basemaps) su dati © [OpenStreetMap](https://www.openstreetmap.org/copyright);
+- satellite: Esri World Imagery;
+- percorsi: [OSRM](https://project-osrm.org) sul server pubblico di [FOSSGIS](https://routing.openstreetmap.de);
+- indirizzi: [Nominatim](https://nominatim.org).
+
+Sono servizi pubblici pensati per un uso moderato, che per una squadra va benissimo. Se l'app dovesse essere usata da un'intera azienda, conviene verificare le condizioni d'uso di CARTO, Esri e FOSSGIS oppure passare a un fornitore a pagamento.

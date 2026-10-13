@@ -164,3 +164,14 @@ test('i dati restano salvati su disco', async () => {
   const saved = JSON.parse(fs.readFileSync(path.join(dataDir, 'cabinets.json'), 'utf8'));
   assert.ok(saved.cabinets.some((c) => c.id === cab.id && c.code === 'PTE 7'));
 });
+
+test('blocca dopo troppe password sbagliate, non dopo accessi riusciti', async () => {
+  for (let i = 0; i < 12; i++) {
+    const ok = await call('POST', '/api/login', { body: { name: `Collega ${i}`, password: 'segreta' }, auth: false });
+    assert.equal(ok.status, 200);
+  }
+  // Una password sbagliata è già stata provata in un test precedente.
+  for (let i = 0; i < 9; i++) await call('POST', '/api/login', { body: { name: 'X', password: 'no' }, auth: false });
+  const blocked = await call('POST', '/api/login', { body: { name: 'Marco', password: 'segreta' }, auth: false });
+  assert.equal(blocked.status, 429);
+});
