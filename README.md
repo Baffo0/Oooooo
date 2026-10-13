@@ -20,6 +20,20 @@ Pensata per il telefono, in strada: si apre dal browser e si può aggiungere all
 - **Esportazione** in Excel (CSV), Google Earth (KML) e GeoJSON, utile anche come backup.
 - **Accesso con password di squadra**: ognuno entra col proprio nome, così si vede chi ha fatto cosa.
 
+## App Android
+
+C'è anche un'app Android (APK) da installare sul telefono. L'ultima versione si scarica sempre da qui:
+<https://github.com/Baffo0/Oooooo/releases/download/apk-test/cabine-fibra.apk>
+
+Al primo avvio si sceglie come usarla:
+
+- **Prova sul telefono**: funziona subito, senza server. Le cabine restano salvate solo su quel telefono.
+- **Server della squadra**: si inserisce l'indirizzo del sito (vedi sotto come metterlo online) e le cabine sono condivise con i colleghi.
+
+Si può cambiare in ogni momento dal menu in alto a destra, alla voce **Modalità e server**. Dettagli in [android/README.md](android/README.md).
+
+L'APK viene costruito automaticamente da GitHub Actions a ogni modifica (file `.github/workflows/android.yml`).
+
 ## Provarlo sul computer
 
 Serve [Node.js](https://nodejs.org) 18 o più recente. Non ci sono dipendenze da installare.

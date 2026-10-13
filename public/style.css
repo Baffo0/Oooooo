@@ -626,8 +626,9 @@ label > input, label > select, label > textarea, label > .input-with-btn { margi
 .notes { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
 .photos { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
 .photo { position: relative; aspect-ratio: 1; border-radius: 10px; overflow: hidden; background: var(--bg); }
-.photo a, .photo img { display: block; width: 100%; height: 100%; object-fit: cover; }
-.photo button {
+.photo-open { display: block; width: 100%; height: 100%; padding: 0; border: 0; background: none; }
+.photo img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.photo .photo-delete {
   position: absolute;
   top: 4px;
   right: 4px;
@@ -640,7 +641,43 @@ label > input, label > select, label > textarea, label > .input-with-btn { margi
   display: grid;
   place-items: center;
 }
-.photo button .ico { width: 16px; height: 16px; }
+.photo .photo-delete .ico { width: 16px; height: 16px; }
+
+/* Visore foto */
+.viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 2500;
+  background: rgba(0, 0, 0, 0.94);
+  display: grid;
+  place-items: center;
+  padding: calc(var(--safe-top) + 56px) 8px calc(var(--safe-bottom) + 56px);
+}
+.viewer img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 6px; }
+.viewer-btn {
+  position: absolute;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: 0;
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+  display: grid;
+  place-items: center;
+}
+.viewer-close { top: calc(var(--safe-top) + 8px); right: 8px; }
+.viewer-prev { left: 8px; top: 50%; margin-top: -24px; }
+.viewer-next { right: 8px; top: 50%; margin-top: -24px; }
+.viewer-caption {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--safe-bottom) + 14px);
+  margin: 0;
+  text-align: center;
+  color: #e6edf2;
+  font-size: 0.9rem;
+}
 .add-photo {
   aspect-ratio: 1;
   border: 2px dashed var(--border);

@@ -8,6 +8,7 @@ const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const Core = require('./public/core.js');
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -18,12 +19,7 @@ const DB_FILE = path.join(DATA_DIR, 'cabinets.json');
 const TEAM_PASSWORD = process.env.TEAM_PASSWORD || '';
 const SESSION_DAYS = Number(process.env.SESSION_DAYS) || 90;
 
-const TYPES = ['PFP', 'PFS', 'PTE', 'PCN', 'POZZETTO', 'MUFFOLA', 'ALTRO'];
-const STATUSES = ['da_fare', 'in_corso', 'fatto', 'problema'];
-const MAX_PHOTOS = 6;
-const MAX_PHOTO_BYTES = 8 * 1024 * 1024;
 const MAX_JSON_BYTES = 200 * 1024;
-const MAX_LOG_ENTRIES = 500;
 
 // ---------------------------------------------------------------------------
 // Archivio (file JSON con scrittura atomica)
@@ -39,12 +35,7 @@ if (fs.existsSync(DB_FILE)) {
     console.error(`Il file ${DB_FILE} è danneggiato: ripristinalo da un backup prima di avviare il server.`);
     throw err;
   }
-  if (!Array.isArray(db.cabinets)) db.cabinets = [];
-  // Dati scritti a mano o da versioni precedenti: garantiamo i campi che il codice si aspetta.
-  for (const cab of db.cabinets) {
-    if (!Array.isArray(cab.photos)) cab.photos = [];
-    if (!Array.isArray(cab.log)) cab.log = [];
-  }
+  db = Core.normalize(db);
 }
 let etag = computeEtag();
 
@@ -164,12 +155,8 @@ function recordLoginFailure(ip) {
 // Utilità HTTP
 // ---------------------------------------------------------------------------
 
-class HttpError extends Error {
-  constructor(status, message) {
-    super(message);
-    this.status = status;
-  }
-}
+// Stesso tipo di errore delle regole condivise: entrambi diventano una risposta HTTP.
+const HttpError = Core.CoreError;
 
 function sendJson(res, status, body, headers = {}) {
   const data = JSON.stringify(body);
@@ -214,47 +201,6 @@ function newId() {
   return crypto.randomBytes(9).toString('base64url');
 }
 
-function cleanText(value, max) {
-  if (value === undefined || value === null) return '';
-  if (typeof value !== 'string') throw new HttpError(400, 'Valore di testo non valido');
-  return value.trim().slice(0, max);
-}
-
-function cleanNumber(value, min, max, field) {
-  const n = Number(value);
-  if (value === '' || value === null || value === undefined || !Number.isFinite(n) || n < min || n > max) {
-    throw new HttpError(400, `Valore non valido per ${field}`);
-  }
-  return n;
-}
-
-function cabinetFields(body) {
-  const type = body.type === undefined ? 'ALTRO' : body.type;
-  const status = body.status === undefined ? 'da_fare' : body.status;
-  if (!TYPES.includes(type)) throw new HttpError(400, 'Tipo non valido');
-  if (!STATUSES.includes(status)) throw new HttpError(400, 'Stato non valido');
-  const fields = {
-    code: cleanText(body.code, 80),
-    type,
-    status,
-    lat: cleanNumber(body.lat, -90, 90, 'latitudine'),
-    lng: cleanNumber(body.lng, -180, 180, 'longitudine'),
-    accuracy: null,
-    address: cleanText(body.address, 200),
-    notes: cleanText(body.notes, 4000),
-  };
-  if (body.accuracy !== undefined && body.accuracy !== null && body.accuracy !== '') {
-    fields.accuracy = Math.round(cleanNumber(body.accuracy, 0, 100000, 'precisione'));
-  }
-  return fields;
-}
-
-function findCabinet(id) {
-  const cab = db.cabinets.find((c) => c.id === id);
-  if (!cab) throw new HttpError(404, 'Cabina non trovata');
-  return cab;
-}
-
 function photoPath(cabId, photoId) {
   return path.join(PHOTOS_DIR, `${cabId}-${photoId}.jpg`);
 }
@@ -272,7 +218,7 @@ async function handleApi(req, res, url) {
     const ip = req.headers['x-forwarded-for']?.split(',').pop().trim() || req.socket.remoteAddress;
     if (loginBlocked(ip)) throw new HttpError(429, 'Troppi tentativi, riprova tra qualche minuto');
     const body = await readJson(req);
-    const name = cleanText(body.name, 40);
+    const name = Core.cleanText(body.name, 40);
     if (!name) throw new HttpError(400, 'Inserisci il tuo nome');
     if (TEAM_PASSWORD && !passwordMatches(body.password || '')) {
       recordLoginFailure(ip);
@@ -287,7 +233,9 @@ async function handleApi(req, res, url) {
   }
 
   if (pathname === '/api/config' && method === 'GET') {
-    return sendJson(res, 200, { passwordRequired: Boolean(TEAM_PASSWORD), types: TYPES, statuses: STATUSES });
+    // Leggibile da qualunque origine: l'app Android la usa per riconoscere il server.
+    return sendJson(res, 200, { passwordRequired: Boolean(TEAM_PASSWORD), types: Core.TYPES, statuses: Core.STATUSES },
+      { 'Access-Control-Allow-Origin': '*' });
   }
 
   const user = readToken(parseCookies(req).sid);
@@ -305,52 +253,24 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, { cabinets: db.cabinets }, { ETag: etag, 'Cache-Control': 'no-cache' });
   }
 
+  const ctx = { user: user.name, now: new Date().toISOString(), newId };
+
   if (pathname === '/api/cabinets' && method === 'POST') {
-    const body = await readJson(req);
-    const now = new Date().toISOString();
-    // clientId evita duplicati quando un salvataggio fatto offline viene ritentato.
-    const clientId = cleanText(body.clientId, 40);
-    if (clientId) {
-      const existing = db.cabinets.find((c) => c.clientId === clientId);
-      if (existing) return sendJson(res, 200, existing);
-    }
-    const cab = {
-      id: newId(),
-      ...cabinetFields(body),
-      photos: [],
-      log: [],
-      createdBy: user.name,
-      createdAt: now,
-      updatedBy: user.name,
-      updatedAt: now,
-    };
-    if (clientId) cab.clientId = clientId;
-    db.cabinets.push(cab);
-    await persist();
-    return sendJson(res, 201, cab);
+    const result = Core.createCabinet(db, await readJson(req), ctx);
+    if (result.created) await persist();
+    return sendJson(res, result.created ? 201 : 200, result.cabinet);
   }
 
   let m = pathname.match(/^\/api\/cabinets\/([\w-]+)$/);
   if (m && method === 'PUT') {
-    const cab = findCabinet(m[1]);
     const body = await readJson(req);
-    if (body.baseUpdatedAt && body.baseUpdatedAt !== cab.updatedAt) {
-      return sendJson(res, 409, {
-        error: `Nel frattempo ${cab.updatedBy} ha modificato questa cabina. Ricarica e riprova.`,
-        cabinet: cab,
-      });
-    }
-    Object.assign(cab, cabinetFields({ ...cab, ...body }), {
-      updatedBy: user.name,
-      updatedAt: new Date().toISOString(),
-    });
+    const cab = Core.updateCabinet(db, m[1], body, ctx);
     await persist();
     return sendJson(res, 200, cab);
   }
 
   if (m && method === 'DELETE') {
-    const cab = findCabinet(m[1]);
-    db.cabinets = db.cabinets.filter((c) => c !== cab);
+    const cab = Core.deleteCabinet(db, m[1]);
     await persist();
     await Promise.all(cab.photos.map((p) => fsp.rm(photoPath(cab.id, p.id), { force: true })));
     return sendJson(res, 200, { ok: true });
@@ -358,57 +278,42 @@ async function handleApi(req, res, url) {
 
   m = pathname.match(/^\/api\/cabinets\/([\w-]+)\/log$/);
   if (m && method === 'POST') {
-    const cab = findCabinet(m[1]);
-    const body = await readJson(req);
-    const text = cleanText(body.text, 2000);
-    if (!text) throw new HttpError(400, 'Scrivi una nota');
-    const now = new Date().toISOString();
-    cab.log.unshift({ id: newId(), by: user.name, at: now, text });
-    cab.log = cab.log.slice(0, MAX_LOG_ENTRIES);
-    cab.updatedBy = user.name;
-    cab.updatedAt = now;
+    const cab = Core.addLog(db, m[1], await readJson(req), ctx);
     await persist();
     return sendJson(res, 201, cab);
   }
 
   m = pathname.match(/^\/api\/cabinets\/([\w-]+)\/log\/([\w-]+)$/);
   if (m && method === 'DELETE') {
-    const cab = findCabinet(m[1]);
-    const entry = cab.log.find((e) => e.id === m[2]);
-    if (!entry) throw new HttpError(404, 'Nota non trovata');
-    if (entry.by !== user.name) throw new HttpError(403, 'Puoi eliminare solo le tue note');
-    cab.log = cab.log.filter((e) => e !== entry);
+    const cab = Core.deleteLog(db, m[1], m[2], ctx);
     await persist();
     return sendJson(res, 200, cab);
   }
 
   m = pathname.match(/^\/api\/cabinets\/([\w-]+)\/photos$/);
   if (m && method === 'POST') {
-    const cab = findCabinet(m[1]);
-    if (cab.photos.length >= MAX_PHOTOS) throw new HttpError(400, `Massimo ${MAX_PHOTOS} foto per cabina`);
+    const cab = Core.checkPhotoSlot(db, m[1]);
     if (!String(req.headers['content-type']).startsWith('image/jpeg')) {
       throw new HttpError(415, 'Sono accettate solo foto JPEG');
     }
-    const buf = await readBody(req, MAX_PHOTO_BYTES);
-    if (buf.length < 3 || buf[0] !== 0xff || buf[1] !== 0xd8 || buf[2] !== 0xff) {
-      throw new HttpError(400, 'File JPEG non valido');
-    }
-    const photo = { id: newId(), by: user.name, at: new Date().toISOString() };
+    const buf = await readBody(req, Core.MAX_PHOTO_BYTES);
+    Core.checkJpeg(buf, req.headers['content-type']);
+    const photo = Core.newPhoto(ctx);
     await fsp.writeFile(photoPath(cab.id, photo.id), buf);
-    // Durante il caricamento la cabina potrebbe essere stata eliminata o aver ricevuto altre foto.
-    if (!db.cabinets.includes(cab) || cab.photos.length >= MAX_PHOTOS) {
+    try {
+      // Durante il caricamento la cabina potrebbe essere stata eliminata o aver ricevuto altre foto.
+      Core.addPhoto(db, m[1], photo);
+    } catch (err) {
       await fsp.rm(photoPath(cab.id, photo.id), { force: true });
-      throw new HttpError(db.cabinets.includes(cab) ? 400 : 404,
-        db.cabinets.includes(cab) ? `Massimo ${MAX_PHOTOS} foto per cabina` : 'Cabina non trovata');
+      throw err;
     }
-    cab.photos.push(photo);
     await persist();
-    return sendJson(res, 201, cab);
+    return sendJson(res, 201, Core.findCabinet(db, m[1]));
   }
 
   m = pathname.match(/^\/api\/cabinets\/([\w-]+)\/photos\/([\w-]+)$/);
   if (m && method === 'GET') {
-    const cab = findCabinet(m[1]);
+    const cab = Core.findCabinet(db, m[1]);
     if (!cab.photos.some((p) => p.id === m[2])) throw new HttpError(404, 'Foto non trovata');
     const data = await fsp.readFile(photoPath(cab.id, m[2]));
     res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'private, max-age=31536000, immutable' });
@@ -416,8 +321,7 @@ async function handleApi(req, res, url) {
   }
 
   if (m && method === 'DELETE') {
-    const cab = findCabinet(m[1]);
-    cab.photos = cab.photos.filter((p) => p.id !== m[2]);
+    const cab = Core.deletePhoto(db, m[1], m[2]);
     await persist();
     await fsp.rm(photoPath(cab.id, m[2]), { force: true });
     return sendJson(res, 200, cab);
@@ -517,7 +421,8 @@ const server = http.createServer(async (req, res) => {
     const known = err instanceof HttpError;
     const status = known ? err.status : 500;
     if (!known) console.error(err);
-    if (!res.headersSent) sendJson(res, status, { error: known ? err.message : 'Errore interno del server' });
+    // err.data porta informazioni utili all'app, es. la versione aggiornata in caso di conflitto.
+    if (!res.headersSent) sendJson(res, status, known ? { error: err.message, ...(err.data || {}) } : { error: 'Errore interno del server' });
     else res.end();
   }
 });

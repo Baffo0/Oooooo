@@ -19,6 +19,11 @@ const LOW_ACCURACY_M = 30;
 
 const $ = (sel, root = document) => root.querySelector(sel);
 
+// "Prova sul telefono" (app Android senza server): i dati restano nel telefono.
+const LOCAL = Boolean(window.CABINE_CONFIG?.local);
+// Funzioni dell'app Android (condividi file, schermo acceso, impostazioni), se presenti.
+const NATIVE = window.CabineApp || null;
+
 const state = {
   me: null,
   config: null,
@@ -160,22 +165,31 @@ class ApiError extends Error {
 }
 
 async function api(path, { method = 'GET', body, headers = {} } = {}) {
-  const opts = { method, headers: { ...headers }, credentials: 'same-origin', cache: 'no-store' };
-  if (body instanceof Blob) {
-    opts.body = body;
-    opts.headers['Content-Type'] = body.type;
-  } else if (body !== undefined) {
-    opts.body = JSON.stringify(body);
-    opts.headers['Content-Type'] = 'application/json';
+  let status;
+  let data = null;
+  let etag = null;
+  if (LOCAL) {
+    ({ status, data, etag } = await LocalApi.request(path, { method, body, headers }));
+  } else {
+    const opts = { method, headers: { ...headers }, credentials: 'same-origin', cache: 'no-store' };
+    if (body instanceof Blob) {
+      opts.body = body;
+      opts.headers['Content-Type'] = body.type;
+    } else if (body !== undefined) {
+      opts.body = JSON.stringify(body);
+      opts.headers['Content-Type'] = 'application/json';
+    }
+    const res = await fetch(path, opts);
+    status = res.status;
+    etag = res.headers.get('etag');
+    if (status !== 304 && res.headers.get('content-type')?.includes('application/json')) data = await res.json();
   }
-  const res = await fetch(path, opts);
-  if (res.status === 304) return { notModified: true };
-  const data = res.headers.get('content-type')?.includes('application/json') ? await res.json() : null;
-  if (!res.ok) {
-    if (res.status === 401 && state.me && path !== '/api/login') showLogin();
-    throw new ApiError(res.status, data?.error || `Errore ${res.status}`, data);
+  if (status === 304) return { notModified: true };
+  if (status < 200 || status >= 300) {
+    if (status === 401 && state.me && path !== '/api/login') showLogin();
+    throw new ApiError(status, data?.error || `Errore ${status}`, data);
   }
-  return { data, etag: res.headers.get('etag') };
+  return { data, etag };
 }
 
 // Errore di rete (offline o server irraggiungibile) e non risposta del server.
@@ -188,7 +202,8 @@ function isNetworkError(err) {
 // ---------------------------------------------------------------------------
 
 async function init() {
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator && !LOCAL) navigator.serviceWorker.register('sw.js').catch(() => {});
+  setupModeTexts();
   try {
     state.config = (await api('/api/config')).data;
   } catch {
@@ -948,13 +963,12 @@ function renderDetail() {
     <section>
       <h3>Foto (${cab.photos.length})</h3>
       <div class="photos">
-        ${cab.photos.map((p) => {
-          const src = `/api/cabinets/${encodeURIComponent(cab.id)}/photos/${encodeURIComponent(p.id)}`;
-          return `<div class="photo">
-            <a href="${src}" target="_blank" rel="noopener" title="Foto di ${esc(p.by)} del ${esc(fmtDate(p.at))}"><img src="${src}" alt="Foto della cabina" loading="lazy"></a>
-            <button type="button" data-photo="${esc(p.id)}" aria-label="Elimina foto">${icon('trash')}</button>
-          </div>`;
-        }).join('')}
+        ${cab.photos.map((p) => `<div class="photo">
+            <button type="button" class="photo-open" data-view="${esc(p.id)}" aria-label="Apri foto di ${esc(p.by)} del ${esc(fmtDate(p.at))}">
+              <img ${photoAttr(cab.id, p.id)} alt="Foto della cabina" loading="lazy">
+            </button>
+            <button type="button" class="photo-delete" data-photo="${esc(p.id)}" aria-label="Elimina foto">${icon('trash')}</button>
+          </div>`).join('')}
         ${cab.photos.length < 6 ? `<button class="add-photo" id="btn-photo" type="button">${icon('camera')}<span>Aggiungi foto</span></button>` : ''}
       </div>
     </section>
@@ -995,6 +1009,8 @@ function renderDetail() {
   $('#btn-photo')?.addEventListener('click', () => $('#photo-input').click());
   $('#log-form').addEventListener('submit', (e) => { e.preventDefault(); addLog(cab); });
   sheet.querySelectorAll('[data-photo]').forEach((b) => b.addEventListener('click', () => deletePhoto(cab, b.dataset.photo)));
+  sheet.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => openViewer(cab, b.dataset.view)));
+  loadLocalPhotos(sheet);
   sheet.querySelectorAll('[data-log]').forEach((b) => b.addEventListener('click', () => deleteLog(cab, b.dataset.log)));
 }
 
@@ -1062,6 +1078,71 @@ $('#photo-input').addEventListener('change', async (e) => {
     toast(isNetworkError(err) ? 'Caricamento non riuscito, controlla la connessione' : err.message, true);
   }
 });
+
+function photoUrl(cabId, photoId) {
+  return `/api/cabinets/${encodeURIComponent(cabId)}/photos/${encodeURIComponent(photoId)}`;
+}
+
+// Con il server la foto ha un indirizzo; in prova sul telefono la si legge dall'archivio locale.
+function photoAttr(cabId, photoId) {
+  return LOCAL ? `data-local-photo="${esc(cabId)}/${esc(photoId)}"` : `src="${photoUrl(cabId, photoId)}"`;
+}
+
+function loadLocalPhotos(root) {
+  if (!LOCAL) return;
+  root.querySelectorAll('img[data-local-photo]').forEach((img) => {
+    const [cabId, photoId] = img.dataset.localPhoto.split('/');
+    LocalApi.photoUrl(cabId, photoId).then((url) => { if (url) img.src = url; }).catch(() => {});
+  });
+}
+
+// Visore a schermo intero, con scorrimento tra le foto della cabina.
+const viewer = { cab: null, index: 0 };
+
+async function openViewer(cab, photoId) {
+  viewer.cab = cab;
+  viewer.index = Math.max(0, cab.photos.findIndex((p) => p.id === photoId));
+  $('#viewer').hidden = false;
+  await showViewerPhoto();
+}
+
+async function showViewerPhoto() {
+  const { cab, index } = viewer;
+  const p = cab?.photos[index];
+  if (!p) return closeViewer();
+  const img = $('#viewer-img');
+  img.removeAttribute('src');
+  img.src = LOCAL ? (await LocalApi.photoUrl(cab.id, p.id)) || '' : photoUrl(cab.id, p.id);
+  $('#viewer-caption').textContent = `Foto ${index + 1} di ${cab.photos.length} · ${p.by} · ${fmtDate(p.at)}`;
+  $('#viewer-prev').hidden = cab.photos.length < 2;
+  $('#viewer-next').hidden = cab.photos.length < 2;
+}
+
+function stepViewer(delta) {
+  const n = viewer.cab.photos.length;
+  viewer.index = (viewer.index + delta + n) % n;
+  showViewerPhoto();
+}
+
+function closeViewer() {
+  $('#viewer').hidden = true;
+  $('#viewer-img').removeAttribute('src');
+  viewer.cab = null;
+}
+
+$('#viewer-close').addEventListener('click', closeViewer);
+$('#viewer-prev').addEventListener('click', () => stepViewer(-1));
+$('#viewer-next').addEventListener('click', () => stepViewer(1));
+$('#viewer').addEventListener('click', (e) => { if (e.target.id === 'viewer') closeViewer(); });
+// Scorrimento col dito tra una foto e l'altra.
+let swipeX = null;
+$('#viewer').addEventListener('touchstart', (e) => { swipeX = e.touches[0].clientX; }, { passive: true });
+$('#viewer').addEventListener('touchend', (e) => {
+  if (swipeX === null || !viewer.cab || viewer.cab.photos.length < 2) return;
+  const dx = e.changedTouches[0].clientX - swipeX;
+  swipeX = null;
+  if (Math.abs(dx) > 50) stepViewer(dx < 0 ? 1 : -1);
+}, { passive: true });
 
 async function resizeImage(file, maxSide, quality) {
   let bitmap;
@@ -1558,6 +1639,10 @@ function renderNav(p) {
 
 // Durante la navigazione lo schermo resta acceso.
 async function requestWakeLock() {
+  if (NATIVE?.keepScreenOn) {
+    NATIVE.keepScreenOn(true);
+    return;
+  }
   try {
     nav.wakeLock = await navigator.wakeLock?.request('screen');
   } catch {
@@ -1566,6 +1651,7 @@ async function requestWakeLock() {
 }
 
 function releaseWakeLock() {
+  if (NATIVE?.keepScreenOn) NATIVE.keepScreenOn(false);
   nav.wakeLock?.release().catch(() => {});
   nav.wakeLock = null;
 }
@@ -1583,7 +1669,9 @@ $('#btn-menu').addEventListener('click', () => $('#menu-dialog').showModal());
 $('#menu-dialog').addEventListener('close', async () => {
   const choice = $('#menu-dialog').returnValue;
   $('#menu-dialog').returnValue = '';
-  if (choice === 'logout') {
+  if (choice === 'settings') {
+    NATIVE?.openSettings();
+  } else if (choice === 'logout') {
     try { await api('/api/logout', { method: 'POST' }); } catch { /* offline */ }
     store('cabine.cache', null);
     store('cabine.me', null);
@@ -1602,6 +1690,10 @@ $('#menu-dialog').addEventListener('close', async () => {
 });
 
 function download(name, content, type) {
+  if (NATIVE?.shareFile) {
+    NATIVE.shareFile(name, type.split(';')[0], content);
+    return;
+  }
   const url = URL.createObjectURL(new Blob([content], { type }));
   const a = document.createElement('a');
   a.href = url;
@@ -1660,13 +1752,72 @@ function exportKml() {
   download(exportName('kml'), kml, 'application/vnd.google-earth.kml+xml');
 }
 
-// Chiudi l'elenco su mobile con il tasto Esc, chiudi la scheda dettaglio.
+// Tasto Indietro di Android ed Esc: chiude la cosa aperta più in alto.
+// Restituisce false quando non c'è niente da chiudere (l'app Android allora va in secondo piano).
+function goBack() {
+  const dialog = document.querySelector('dialog[open]');
+  if (dialog) {
+    dialog.close();
+    return true;
+  }
+  if (!$('#viewer').hidden) {
+    closeViewer();
+    return true;
+  }
+  if (!$('#layers-menu').hidden) {
+    closeLayersMenu();
+    return true;
+  }
+  if (document.activeElement === searchInput) {
+    searchInput.blur();
+    return true;
+  }
+  if (state.pick) {
+    endPick(null);
+    return true;
+  }
+  if (nav.active) {
+    $('#nav-exit')?.click();
+    return true;
+  }
+  if (nav.cabId) {
+    closeRoute();
+    return true;
+  }
+  if (state.selectedId) {
+    closeDetail();
+    return true;
+  }
+  if (!isDesktop() && $('#list-panel').classList.contains('open')) {
+    toggleList(false);
+    return true;
+  }
+  return false;
+}
+window.cabineBack = () => (state.me ? goBack() : false);
+
 document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape' || document.querySelector('dialog[open]')) return;
-  if (state.pick) endPick(null);
-  else if (nav.cabId && !nav.active) closeRoute();
-  else if (state.selectedId && !nav.cabId) closeDetail();
-  else if (!isDesktop()) toggleList(false);
+  if (!$('#viewer').hidden && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+    stepViewer(e.key === 'ArrowLeft' ? -1 : 1);
+    return;
+  }
+  // I dialog si chiudono da soli con Esc.
+  if (e.key !== 'Escape' || document.querySelector('dialog[open]') || nav.active) return;
+  if (document.activeElement === searchInput) return;
+  goBack();
 });
+
+// Testi che cambiano tra server di squadra e prova sul telefono.
+function setupModeTexts() {
+  if (NATIVE) {
+    $('#menu-settings').hidden = false;
+    $('#export-intro').textContent = 'Condividi una copia di tutte le cabine (WhatsApp, email, Drive…), come backup o per aprirle in altri programmi.';
+  }
+  if (!LOCAL) return;
+  $('#login-intro').textContent = 'Modalità prova: le cabine restano salvate solo su questo telefono. Scrivi il tuo nome per iniziare.';
+  $('#login-submit').textContent = 'Inizia';
+  $('#mode-note').hidden = false;
+  $('#menu-logout').textContent = 'Cambia nome';
+}
 
 init();
