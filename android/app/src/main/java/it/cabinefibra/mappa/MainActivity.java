@@ -679,7 +679,7 @@ public class MainActivity extends AppCompatActivity {
                 photo.delete();
             }
             if (lost) {
-                Toast.makeText(this, "La foto non è stata allegata perché Android ha chiuso l'app: riprova.",
+                Toast.makeText(this, "Il file scelto non è arrivato perché Android ha chiuso l'app: riprova.",
                         Toast.LENGTH_LONG).show();
             }
             return;

@@ -61,6 +61,16 @@
     await write(STORE_DATA, 'archive', archive);
   }
 
+  // Telefono pieno: le cabine appena aggiunte non restano solo in memoria.
+  async function saveOrUndo(db, added) {
+    try {
+      await saveArchive();
+    } catch (err) {
+      Core.undoCreate(db, added);
+      throw new Core.CoreError(507, 'Salvataggio sul telefono non riuscito: memoria piena?');
+    }
+  }
+
   function newId() {
     const bytes = new Uint8Array(9);
     root.crypto.getRandomValues(bytes);
@@ -103,14 +113,14 @@
 
     if (path === '/api/cabinets' && method === 'POST') {
       const result = Core.createCabinet(db, body || {}, ctx);
-      if (result.created) await saveArchive();
+      if (result.created) await saveOrUndo(db, [result.cabinet]);
       return ok(result.created ? 201 : 200, result.cabinet);
     }
 
     if (path === '/api/cabinets/import' && method === 'POST') {
-      const result = Core.importCabinets(db, body || {}, ctx);
-      if (result.created) await saveArchive();
-      return ok(200, result);
+      const { created, existing, added } = Core.importCabinets(db, body || {}, ctx);
+      if (created) await saveOrUndo(db, added);
+      return ok(200, { created, existing });
     }
 
     let m = path.match(/^\/api\/cabinets\/([\w-]+)$/);

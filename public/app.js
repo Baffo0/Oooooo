@@ -253,6 +253,9 @@ async function loadConfig() {
 
 function showLogin() {
   state.me = null;
+  // Una finestra rimasta aperta (es. accesso scaduto durante un'importazione) bloccherebbe
+  // i tocchi sulla pagina di accesso.
+  document.querySelectorAll('dialog[open]').forEach((d) => d.close());
   $('#app').hidden = true;
   $('#login').hidden = false;
   // Finché non si sa se serve, il campo password resta visibile.
@@ -2072,10 +2075,13 @@ function exportGeoJson() {
 
 function exportKml() {
   const x = (s) => esc(s);
+  // Le colonne in ExtendedData permettono di reimportare il file senza perdere stato e indirizzo.
+  const data = (name, value) => `<Data name="${name}"><value>${x(value)}</value></Data>`;
   const placemarks = state.cabinets.map((c) => `
   <Placemark>
     <name>${x(cabinetTitle(c))}</name>
     <description>${x([TYPE_LABELS[c.type], STATUS_LABELS[c.status], c.address, c.notes].filter(Boolean).join('\n'))}</description>
+    <ExtendedData>${data('codice', c.code)}${data('tipo', c.type)}${data('stato', c.status)}${data('indirizzo', c.address)}${data('note', c.notes)}</ExtendedData>
     <Point><coordinates>${c.lng},${c.lat},0</coordinates></Point>
   </Placemark>`).join('');
   const kml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -2091,10 +2097,29 @@ function exportKml() {
 // Importazione da Google My Maps, Google Earth o GeoJSON
 // ---------------------------------------------------------------------------
 
-const importState = { name: '', points: [], skipped: null };
+const importState = { name: '', points: [], groupings: {}, grouping: 'layers', unchecked: new Set(), busy: false };
+const IMPORT_BATCH = 500; // punti per richiesta: con molti punti si va a blocchi
+
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+const normName = (s) => String(s || '').trim().replace(/\s+/g, ' ').toLowerCase();
+
+// Le versioni dell'app Android precedenti alla 0.1.9 sanno scegliere solo foto.
+function apkTooOld() {
+  const m = navigator.userAgent.match(/CabineFibraApp\/0\.1\.(\d+)/);
+  return Boolean(m) && Number(m[1]) < 9;
+}
+
+function hideToast() {
+  clearTimeout(toastTimer);
+  $('#toast').hidden = true;
+}
 
 $('#menu-import').addEventListener('click', () => {
   $('#menu-dialog').close();
+  if (apkTooOld()) {
+    toast('Per importare i file KML o KMZ aggiorna l\'app Cabine Fibra all\'ultima versione', true, 7000);
+    return;
+  }
   const input = $('#import-input');
   input.value = '';
   input.click();
@@ -2103,6 +2128,7 @@ $('#menu-import').addEventListener('click', () => {
 $('#import-input').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   if (!file) return;
+  toast('Leggo il file…', false, 60000);
   try {
     const data = await CabineImport.readFile(file);
     if (!data.points.length) {
@@ -2110,113 +2136,208 @@ $('#import-input').addEventListener('change', async (e) => {
         : 'Nel file non ci sono punti da importare', true, 6000);
       return;
     }
+    hideToast();
     openImport(data);
   } catch (err) {
-    toast(err instanceof CabineImport.ImportError ? err.message : 'Il file non si riesce a leggere', true, 6000);
+    toast(err instanceof CabineImport.ImportError ? err.message : 'Il file non si riesce a leggere', true, 8000);
   } finally {
     e.target.value = '';
   }
 });
 
-// Già presente: importato prima (stesso identificativo) oppure con lo stesso nome a meno di
-// 50 m; senza nome, un'altra cabina a meno di 3 m.
+// Cabine vicine a un punto: indice a celle di circa 10 m, per non confrontare tutto con tutto.
+function nearIndex(list) {
+  const cell = (lat, lng) => `${Math.floor(lat * 1e4)}|${Math.floor(lng * 1e4)}`;
+  const grid = new Map();
+  for (const c of list) {
+    const k = cell(c.lat, c.lng);
+    if (!grid.has(k)) grid.set(k, []);
+    grid.get(k).push(c);
+  }
+  return (p, meters, match = () => true) => {
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const near = grid.get(cell(p.lat + dy * 1e-4, p.lng + dx * 1e-4)) || [];
+        if (near.some((c) => distance(c, p) < meters && match(c))) return true;
+      }
+    }
+    return false;
+  };
+}
+
+// Già nell'archivio: importato prima (stesso identificativo, o un punto dello stesso tipo
+// importato a meno di 2 m, cioè solo rinominato su My Maps), con lo stesso nome a meno di
+// 50 m oppure, se senza nome, con un'altra cabina a meno di 3 m.
 function markPresent(points) {
   const ids = new Set(state.cabinets.map((c) => c.clientId).filter(Boolean));
+  const nearImported = nearIndex(state.cabinets.filter((c) => c.clientId?.startsWith('imp-')));
+  const nearAny = nearIndex(state.cabinets);
   const byName = new Map();
   for (const c of state.cabinets) {
-    const key = c.code.trim().replace(/\s+/g, ' ').toLowerCase();
+    const key = normName(c.code);
     if (!key) continue;
     if (!byName.has(key)) byName.set(key, []);
     byName.get(key).push(c);
   }
-  const seen = new Set();
+  const sameName = (key, p) => Boolean(key) && (byName.get(key) || []).some((c) => distance(c, p) < 50);
   for (const p of points) {
-    const key = p.code.toLowerCase();
-    p.present = ids.has(p.clientId) || seen.has(p.clientId) ||
-      (key ? (byName.get(key) || []).some((c) => distance(c, p) < 50) : state.cabinets.some((c) => distance(c, p) < 3));
-    seen.add(p.clientId);
+    p.present = ids.has(p.clientId) || nearImported(p, 2, (c) => !p.type || c.type === p.type) || sameName(normName(p.code), p)
+      || sameName(normName(p.idName), p) || (!p.code && nearAny(p, 3));
   }
 }
 
 function openImport(data) {
   const form = $('#import-form');
   importState.name = data.name;
-  importState.skipped = data.skipped;
-  importState.points = data.points.map((p) => ({ ...p, clientId: CabineImport.pointId(p) }));
+  importState.points = data.points;
+  importState.groupings = data.groupings;
+  importState.grouping = data.defaultGrouping;
+  importState.unchecked = new Set();
+  importState.busy = false;
   markPresent(importState.points);
 
-  const counts = new Map();
-  for (const p of importState.points) {
-    const c = counts.get(p.group) || { total: 0, present: 0 };
-    c.total += 1;
-    if (p.present) c.present += 1;
-    counts.set(p.group, c);
-  }
-  $('#import-groups').innerHTML = data.groups.map((g) => {
-    const c = counts.get(g.name);
-    return `<label class="import-group">
-      <input type="checkbox" data-group="${esc(g.name)}" checked>
-      <span class="import-group-name">${esc(g.name)}</span>
-      <span class="import-group-count">${c.total} ${c.total === 1 ? 'punto' : 'punti'}${c.present ? ` · ${c.present} già presenti` : ''}</span>
-    </label>`;
-  }).join('');
-
-  // Tipo proposto: quello scritto nei nomi della maggior parte dei punti, o nel nome della mappa.
-  const freq = new Map();
-  for (const p of importState.points) if (p.type) freq.set(p.type, (freq.get(p.type) || 0) + 1);
-  const common = [...freq.entries()].sort((a, b) => b[1] - a[1])[0];
+  // Tipo proposto: quello scritto nei nomi della maggior parte dei punti, altrimenti quello
+  // che si capisce dai nomi dei livelli o della mappa.
+  const most = (values) => [...values.reduce((m, v) => (v ? m.set(v, (m.get(v) || 0) + 1) : m), new Map())]
+    .sort((a, b) => b[1] - a[1])[0]?.[0];
   form.type.innerHTML = Object.entries(TYPE_LABELS).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('');
-  form.type.value = common ? common[0] : importState.points[0].docType || 'ALTRO';
+  form.type.value = most(data.points.map((p) => p.type))
+    || most(data.points.map((p) => CabineImport.guessType(p.folder))) || CabineImport.guessType(data.name) || 'ALTRO';
   form.status.innerHTML = Object.entries(STATUS_LABELS).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('');
   form.status.value = 'da_fare';
 
-  const notes = [`«${data.name}»`, `${data.points.length} punti`];
-  if (data.skipped.notPoint) notes.push(`${data.skipped.notPoint} linee o aree non importabili`);
-  if (data.skipped.invalid) notes.push(`${data.skipped.invalid} senza coordinate valide`);
+  const notes = [`«${data.name}»`, plural(data.points.length, 'punto', 'punti')];
+  if (data.skipped.notPoint) notes.push(`${plural(data.skipped.notPoint, 'linea o area', 'linee o aree')} da non importare`);
+  if (data.skipped.invalid) notes.push(`${plural(data.skipped.invalid, 'punto', 'punti')} senza coordinate valide`);
   $('#import-source').textContent = notes.join(' · ');
   $('#import-error').textContent = '';
-  updateImportSummary();
+  renderImportGroups();
+  setImportBusy(false);
   $('#import-dialog').showModal();
+  $('#import-groups').scrollTop = 0;
 }
 
-function selectedImportPoints() {
-  const groups = new Set([...document.querySelectorAll('#import-groups input:checked')].map((i) => i.dataset.group));
-  return importState.points.filter((p) => groups.has(p.group));
+function renderImportGroups() {
+  const key = importState.grouping;
+  const both = Boolean(importState.groupings.layers && importState.groupings.codes);
+  $('#import-grouping').hidden = !both;
+  document.querySelectorAll('#import-grouping [data-grouping]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.grouping === key)));
+  const present = new Map();
+  for (const p of importState.points) if (p.present) present.set(p.groups[key], (present.get(p.groups[key]) || 0) + 1);
+  $('#import-groups').innerHTML = importState.groupings[key].map((g) => {
+    const already = present.get(g.name) || 0;
+    return `<label class="import-group">
+      <input type="checkbox" data-group="${esc(g.name)}"${importState.unchecked.has(g.name) ? '' : ' checked'}>
+      <span class="import-group-text">
+        <span class="import-group-name">${esc(g.name)}</span>
+        <span class="import-group-count">${plural(g.count, 'punto', 'punti')}${already ? ` · ${already === g.count ? 'già tutti presenti' : `${already} già ${already === 1 ? 'presente' : 'presenti'}`}` : ''}</span>
+      </span>
+    </label>`;
+  }).join('');
+  updateImportSummary();
+}
+
+// Cosa verrà importato: i punti dei gruppi scelti che non ci sono già (né due volte nel file).
+function importPlan() {
+  const key = importState.grouping;
+  const selected = importState.points.filter((p) => !importState.unchecked.has(p.groups[key]));
+  const seen = new Set();
+  const fresh = [];
+  for (const p of selected) {
+    if (p.present || seen.has(p.clientId)) continue;
+    seen.add(p.clientId);
+    fresh.push(p);
+  }
+  return { selected, fresh, skip: selected.length - fresh.length };
 }
 
 function updateImportSummary() {
   const form = $('#import-form');
-  const selected = selectedImportPoints();
-  const fresh = selected.filter((p) => !p.present);
-  const skip = selected.length - fresh.length;
+  const { selected, fresh, skip } = importPlan();
   const own = fresh.filter((p) => p.type && p.type !== form.type.value);
   $('#import-type-note').textContent = own.length
-    ? `${own.length} ${own.length === 1 ? 'punto ha' : 'punti hanno'} un altro tipo scritto nel nome (es. ${TYPE_LABELS[own[0].type].split(' – ')[0]}) e lo tengono.`
+    ? `${own.length === 1 ? '1 punto ha' : `${own.length} punti hanno`} un altro tipo scritto nel nome o nella tabella `
+      + `(es. ${TYPE_LABELS[own[0].type].split(' – ')[0]}) e lo tiene${own.length === 1 ? '' : 'no'}.`
     : '';
-  $('#import-summary').textContent = fresh.length
-    ? `Verranno aggiunte ${fresh.length} cabine${skip ? ` · ${skip} ci sono già e vengono saltate` : ''}.`
-    : selected.length ? 'Le cabine scelte ci sono già tutte.' : 'Scegli almeno un gruppo.';
+  let text;
+  if (fresh.length) {
+    text = fresh.length === 1 ? 'Verrà aggiunta 1 cabina' : `Verranno aggiunte ${fresh.length} cabine`;
+    if (skip) text += ` · ${plural(skip, 'c\'è già e viene saltata', 'ci sono già e vengono saltate')}`;
+    text += '.';
+  } else {
+    text = selected.length ? 'Le cabine scelte ci sono già tutte.' : 'Scegli almeno un gruppo.';
+  }
+  $('#import-summary').textContent = text;
   const go = $('#import-go');
-  go.disabled = !fresh.length;
-  go.textContent = fresh.length ? `Importa ${fresh.length}` : 'Importa';
+  go.disabled = importState.busy || !fresh.length;
+  if (!importState.busy) go.textContent = fresh.length ? `Importa ${fresh.length}` : 'Importa';
 }
 
-$('#import-groups').addEventListener('change', updateImportSummary);
+function setImportBusy(busy) {
+  importState.busy = busy;
+  document.querySelectorAll('#import-form input, #import-form select, #import-form button').forEach((el) => {
+    if (el.id !== 'import-go') el.disabled = busy;
+  });
+  updateImportSummary();
+}
+
+$('#import-groups').addEventListener('change', (e) => {
+  const box = e.target.closest('[data-group]');
+  if (!box) return;
+  if (box.checked) importState.unchecked.delete(box.dataset.group);
+  else importState.unchecked.add(box.dataset.group);
+  updateImportSummary();
+});
+$('#import-grouping').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-grouping]');
+  if (!b || b.dataset.grouping === importState.grouping) return;
+  importState.grouping = b.dataset.grouping;
+  importState.unchecked = new Set();
+  renderImportGroups();
+});
 $('#import-form').type.addEventListener('change', updateImportSummary);
 $('#import-all').addEventListener('click', () => {
-  document.querySelectorAll('#import-groups input').forEach((i) => { i.checked = true; });
-  updateImportSummary();
+  importState.unchecked = new Set();
+  renderImportGroups();
 });
 $('#import-none').addEventListener('click', () => {
-  document.querySelectorAll('#import-groups input').forEach((i) => { i.checked = false; });
-  updateImportSummary();
+  importState.unchecked = new Set(importState.groupings[importState.grouping].map((g) => g.name));
+  renderImportGroups();
 });
+// Invio su una casella non deve chiudere né confermare la finestra.
+$('#import-form').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.tagName !== 'BUTTON') e.preventDefault();
+});
+// Durante l'invio la finestra resta aperta (anche con Esc o con il tasto Indietro).
+$('#import-dialog').addEventListener('cancel', (e) => {
+  if (importState.busy) e.preventDefault();
+});
+
+function importErrorMessage(err) {
+  if (err instanceof ApiError) return err.status === 413 ? 'Troppi dati in una volta: importa meno gruppi alla volta' : err.message;
+  return LOCAL ? 'Salvataggio sul telefono non riuscito' : 'Serve la connessione per importare: riprova quando c\'è campo';
+}
+
+// Dopo l'importazione si vedono le cabine nuove: via filtri e ricerca che le nasconderebbero.
+function showImported(list) {
+  if (searchInput.value || $('#filter-type').value || state.filterStatus) {
+    clearTimeout(searchTimer);
+    searchInput.value = '';
+    $('#search-clear').hidden = true;
+    $('#filter-type').value = '';
+    setStatusFilter('');
+  }
+  setFollow(false);
+  state.userMovedMap = true;
+  map.fitBounds(L.latLngBounds(list.map((p) => [p.lat, p.lng])), { padding: [40, 40], maxZoom: 16 });
+}
 
 $('#import-form').addEventListener('submit', async (e) => {
   if (e.submitter?.value !== 'import') return; // Annulla chiude la finestra
   e.preventDefault();
+  if (importState.busy) return;
   const form = e.currentTarget;
-  const list = selectedImportPoints().filter((p) => !p.present).map((p) => ({
+  const list = importPlan().fresh.map((p) => ({
     clientId: p.clientId,
     code: p.code,
     type: p.type || form.type.value,
@@ -2225,27 +2346,41 @@ $('#import-form').addEventListener('submit', async (e) => {
     lng: p.lng,
     address: p.address,
     notes: p.notes,
+    ...(p.log.length ? { log: p.log } : {}),
   }));
   if (!list.length) return;
-  const go = $('#import-go');
-  go.disabled = true;
-  go.textContent = 'Importo…';
   $('#import-error').textContent = '';
+  setImportBusy(true);
+  let created = 0;
+  let existing = 0;
   try {
-    const { data } = await api('/api/cabinets/import', { method: 'POST', body: { cabinets: list } });
+    for (let i = 0; i < list.length; i += IMPORT_BATCH) {
+      $('#import-go').textContent = list.length > IMPORT_BATCH
+        ? `Importo… ${Math.min(i + IMPORT_BATCH, list.length)} di ${list.length}` : 'Importo…';
+      const { data } = await api('/api/cabinets/import', { method: 'POST', body: { cabinets: list.slice(i, i + IMPORT_BATCH) } });
+      created += data.created;
+      existing += data.existing;
+    }
+    setImportBusy(false);
     $('#import-dialog').close();
     state.localChanges += 1;
     state.etag = null;
-    setFollow(false);
-    state.userMovedMap = true;
-    map.fitBounds(L.latLngBounds(list.map((p) => [p.lat, p.lng])), { padding: [40, 40], maxZoom: 16 });
-    toast(`Importate ${data.created} cabine${data.existing ? ` (${data.existing} c'erano già)` : ''}`, false, 5000);
+    showImported(list);
+    toast(`${created === 1 ? 'Importata 1 cabina' : `Importate ${created} cabine`}${existing ? ` (${existing} c'${existing === 1 ? 'era' : 'erano'} già)` : ''}`, false, 5000);
     await refresh();
   } catch (err) {
-    $('#import-error').textContent = isNetworkError(err)
-      ? 'Serve la connessione per importare: riprova quando c\'è campo'
-      : err.message;
-    updateImportSummary();
+    setImportBusy(false);
+    $('#import-error').textContent = (created ? `${plural(created, 'cabina importata', 'cabine importate')} prima dell'errore. ` : '')
+      + importErrorMessage(err);
+    if (created) {
+      // Riprovando, quelle già arrivate vengono riconosciute e saltate.
+      state.localChanges += 1;
+      state.etag = null;
+      refresh().then(() => {
+        markPresent(importState.points);
+        if ($('#import-dialog').open) renderImportGroups();
+      });
+    }
   }
 });
 
@@ -2254,7 +2389,7 @@ $('#import-form').addEventListener('submit', async (e) => {
 function goBack() {
   const dialog = document.querySelector('dialog[open]');
   if (dialog) {
-    dialog.close();
+    if (!(dialog.id === 'import-dialog' && importState.busy)) dialog.close();
     return true;
   }
   if (!$('#viewer').hidden) {

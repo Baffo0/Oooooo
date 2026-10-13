@@ -113,13 +113,39 @@
         throw new CoreError(400, `Punto ${i + 1} (${String(item.code || '').slice(0, 40) || 'senza nome'}): ${err.message}`);
       }
     });
-    let created = 0;
+    const added = [];
     let existing = 0;
     for (const item of list) {
-      if (createCabinet(db, item, ctx).created) created += 1;
-      else existing += 1;
+      const result = createCabinet(db, item, ctx);
+      if (!result.created) {
+        existing += 1;
+        continue;
+      }
+      // Ripristino da un backup di questa app: il diario interventi torna con la cabina.
+      if (Array.isArray(item.log)) result.cabinet.log = importLog(item.log, ctx);
+      added.push(result.cabinet);
     }
-    return { created, existing };
+    return { created: added.length, existing, added };
+  }
+
+  function importLog(log, ctx) {
+    const out = [];
+    for (const e of log.slice(0, MAX_LOG_ENTRIES)) {
+      if (!e || typeof e !== 'object' || typeof e.text !== 'string') continue;
+      const text = e.text.trim().slice(0, 2000);
+      if (!text) continue;
+      const at = typeof e.at === 'string' && !Number.isNaN(Date.parse(e.at)) ? new Date(e.at).toISOString() : ctx.now;
+      const by = typeof e.by === 'string' && e.by.trim() ? e.by.trim().slice(0, 40) : ctx.user;
+      out.push({ id: ctx.newId(), by, at, text });
+    }
+    return out;
+  }
+
+  // Se il salvataggio su disco fallisce si tolgono le cabine appena aggiunte: riprovando
+  // vengono create (e salvate) davvero, invece di risultare "già presenti" solo in memoria.
+  function undoCreate(db, cabinets) {
+    const gone = new Set(cabinets);
+    db.cabinets = db.cabinets.filter((c) => !gone.has(c));
   }
 
   function updateCabinet(db, id, body, ctx) {
@@ -203,6 +229,7 @@
     findCabinet,
     createCabinet,
     importCabinets,
+    undoCreate,
     updateCabinet,
     deleteCabinet,
     addLog,

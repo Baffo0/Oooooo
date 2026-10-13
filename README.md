@@ -20,6 +20,7 @@ Pensata per il telefono, in strada: si apre dal browser e si può aggiungere all
 - **Funziona anche senza campo**: l'ultima copia delle cabine resta sul telefono, e le cabine aggiunte offline vengono inviate da sole quando torna la connessione. Riaprendo l'app la mappa compare subito, senza aspettare il server.
 - **Veloce anche sui telefoni economici**: sulla mappa si disegnano solo le cabine nella zona che stai guardando, l'elenco si prepara a pagine mentre scorri, e sui telefoni con poca memoria la mappa usa meno pixel. Il server invia file e dati compressi.
 - **Esportazione** in Excel (CSV), Google Earth (KML) e GeoJSON, utile anche come backup.
+- **Importazione da Google My Maps e Google Earth** (file KML o KMZ) e da GeoJSON, anche per ripristinare un backup: si scelgono i livelli della mappa o le sigle di zona nei nomi (es. solo da NA_01 a NA_06), e le cabine già presenti vengono saltate.
 - **Accesso con password di squadra**: ognuno entra col proprio nome, così si vede chi ha fatto cosa.
 
 ## App Android
@@ -82,6 +83,17 @@ Metti davanti un proxy con HTTPS, per esempio [Caddy](https://caddyserver.com): 
 | `PORT` | Porta del server | `3000` |
 | `SESSION_DAYS` | Dopo quanti giorni bisogna rifare l'accesso | `90` |
 | `SESSION_SECRET` | Chiave per firmare gli accessi. Se manca viene generata e salvata in `DATA_DIR` | generata |
+
+## Importare i punti da Google My Maps
+
+1. Apri la mappa di My Maps nel browser (sul telefono, se non vedi il menu ⋮ accanto al titolo, attiva «Sito desktop» dal menu di Chrome).
+2. Menu ⋮ → **Scarica KML** (o «Esporta in KML/KMZ») → scegli l'intera mappa o un livello → Scarica. **Non** spuntare «Mantieni i dati aggiornati»: in quel caso il file contiene solo il collegamento alla mappa e non i punti.
+3. Nell'app: tocca la tua iniziale in alto a destra → **Importa da Google My Maps (KML/KMZ)** → scegli il file.
+4. Spunta solo i gruppi da importare. Se i nomi contengono una sigla di zona (es. NA_01), puoi dividere i punti per sigla oppure per livello della mappa.
+5. Scegli il tipo (PFS, PTE…) per i punti che non lo hanno nel nome e lo stato iniziale, poi **Importa**.
+
+Indirizzo e descrizione arrivano dalle colonne della mappa, il nome del livello finisce nelle note. Reimportando lo stesso file non si creano doppioni.
+Funziona anche con i file di Google Earth e con il GeoJSON esportato dall'app (che conserva stato e diario interventi).
 
 ## Sul telefono
 

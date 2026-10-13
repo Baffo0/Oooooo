@@ -254,6 +254,10 @@
             <button id="import-none" class="btn btn-small" type="button">Nessuno</button>
           </span>
         </div>
+        <div id="import-grouping" class="segmented" role="group" aria-label="Dividi per" hidden>
+          <button type="button" data-grouping="codes" aria-pressed="false">Sigla nel nome</button>
+          <button type="button" data-grouping="layers" aria-pressed="false">Livelli della mappa</button>
+        </div>
         <div id="import-groups" class="import-groups"></div>
         <div class="grid2">
           <label>Tipo
@@ -267,7 +271,7 @@
         <p id="import-summary" class="small" role="status"></p>
         <p id="import-error" class="error" role="alert"></p>
         <div class="row end">
-          <button class="btn" value="cancel" formnovalidate>Annulla</button>
+          <button id="import-cancel" class="btn" value="cancel" formnovalidate>Annulla</button>
           <button id="import-go" class="btn btn-primary" type="submit" value="import">Importa</button>
         </div>
       </form>

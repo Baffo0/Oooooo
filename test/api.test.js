@@ -298,3 +298,35 @@ test('importazione: o tutti o nessuno, con limiti e accesso', async () => {
   const foreign = await call('POST', '/api/cabinets/import', { body: { cabinets: [{ lat: 41, lng: 14 }] }, headers: { origin: 'https://altro.example' } });
   assert.equal(foreign.status, 403);
 });
+
+test('importazione da backup: il diario torna con la cabina', async () => {
+  const res = await call('POST', '/api/cabinets/import', { body: { cabinets: [{
+    clientId: 'imp-diario', code: 'PTE con diario', type: 'PTE', status: 'fatto', lat: 41.2, lng: 14.2,
+    log: [{ by: 'Sara', at: '2026-03-01T10:00:00.000Z', text: 'Sostituito lucchetto' }, { text: '' }, { by: 'x'.repeat(80), at: 'ieri', text: 'Pulito' }],
+  }] } });
+  assert.equal(res.status, 200);
+  const cab = (await call('GET', '/api/cabinets')).data.cabinets.find((c) => c.clientId === 'imp-diario');
+  assert.equal(cab.log.length, 2);
+  assert.deepEqual([cab.log[0].by, cab.log[0].at, cab.log[0].text], ['Sara', '2026-03-01T10:00:00.000Z', 'Sostituito lucchetto']);
+  assert.equal(cab.log[1].by.length, 40);
+  assert.ok(cab.log.every((e) => e.id));
+});
+
+test('importazione oltre 5 MB: risposta 413, non connessione interrotta', async () => {
+  const res = await call('POST', '/api/cabinets/import', { body: { cabinets: [{ lat: 41, lng: 14, notes: 'x'.repeat(6 * 1024 * 1024) }] } });
+  assert.equal(res.status, 413);
+  assert.match(res.data.error, /troppo grande/i);
+});
+
+test('se il salvataggio fallisce le cabine appena aggiunte si tolgono', () => {
+  const Core = require('../public/core.js');
+  let n = 0;
+  const ctx = { user: 'Test', now: '2026-01-01T00:00:00.000Z', newId: () => `id${n++}` };
+  const db = Core.normalize({ cabinets: [] });
+  const body = { cabinets: [{ clientId: 'imp-a', lat: 41, lng: 14 }, { clientId: 'imp-b', lat: 41.1, lng: 14 }] };
+  const first = Core.importCabinets(db, body, ctx);
+  assert.equal(first.created, 2);
+  Core.undoCreate(db, first.added);
+  assert.equal(db.cabinets.length, 0);
+  assert.equal(Core.importCabinets(db, body, ctx).created, 2);
+});

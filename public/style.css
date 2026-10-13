@@ -870,8 +870,23 @@ details summary { cursor: pointer; font-weight: 650; padding: 10px 0 2px; color:
 }
 .import-group + .import-group { border-top: 1px solid var(--border); }
 .import-group input { width: 22px; height: 22px; margin: 0; flex: none; accent-color: var(--accent); }
-.import-group-name { flex: 1; min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
-.import-group-count { color: var(--muted); font-size: 0.85rem; white-space: nowrap; }
+.import-group-text { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 10px; }
+.import-group-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
+.import-group-count { color: var(--muted); font-size: 0.85rem; }
+.segmented { display: flex; gap: 0; margin-top: 10px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+.segmented button {
+  flex: 1;
+  min-height: 40px;
+  padding: 6px 10px;
+  border: 0;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+.segmented button + button { border-left: 1px solid var(--border); }
+.segmented button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent-strong); }
 
 /* Avvisi */
 .toast {

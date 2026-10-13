@@ -63,6 +63,16 @@ function persist() {
   });
 }
 
+async function persistOrUndo(added) {
+  try {
+    await persist();
+  } catch (err) {
+    Core.undoCreate(db, added);
+    etag = computeEtag();
+    throw err;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Sessioni (cookie firmato HMAC; cambiare TEAM_PASSWORD disconnette tutti)
 // ---------------------------------------------------------------------------
@@ -196,10 +206,13 @@ function readBody(req, limit) {
     const chunks = [];
     let size = 0;
     req.on('data', (chunk) => {
+      if (size > limit) return;
       size += chunk.length;
       if (size > limit) {
+        // Si smette di conservare i dati ma si lascia finire l'invio: così il telefono riceve
+        // davvero la risposta "troppo grande" invece di una connessione interrotta.
+        chunks.length = 0;
         reject(new HttpError(413, 'Contenuto troppo grande'));
-        req.destroy();
         return;
       }
       chunks.push(chunk);
@@ -280,14 +293,14 @@ async function handleApi(req, res, url) {
 
   if (pathname === '/api/cabinets' && method === 'POST') {
     const result = Core.createCabinet(db, await readJson(req), ctx);
-    if (result.created) await persist();
+    if (result.created) await persistOrUndo([result.cabinet]);
     return sendJson(res, result.created ? 201 : 200, result.cabinet);
   }
 
   if (pathname === '/api/cabinets/import' && method === 'POST') {
-    const result = Core.importCabinets(db, await readJson(req, MAX_IMPORT_BYTES), ctx);
-    if (result.created) await persist();
-    return sendJson(res, 200, result);
+    const { created, existing, added } = Core.importCabinets(db, await readJson(req, MAX_IMPORT_BYTES), ctx);
+    if (created) await persistOrUndo(added);
+    return sendJson(res, 200, { created, existing });
   }
 
   let m = pathname.match(/^\/api\/cabinets\/([\w-]+)$/);
