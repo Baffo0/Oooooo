@@ -368,42 +368,109 @@ function getCabinet(id) {
 // Mappa
 // ---------------------------------------------------------------------------
 
-const LAYERS = {
-  strade: () => L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-    subdomains: 'abcd',
+// Mappa stradale: stile "liberty" di OpenFreeMap (gratuito, senza chiave, simile a Google
+// Maps), disegnato con MapLibre dentro Leaflet. Senza WebGL, o se il servizio non risponde,
+// si passa da soli a OpenStreetMap.
+const OFM_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
+const OSM_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
+const VECTOR_TIMEOUT_MS = 20000;
+
+const vectorSupported = (() => {
+  try {
+    if (typeof maplibregl === 'undefined' || typeof L.maplibreGL !== 'function') return false;
+    const canvas = document.createElement('canvas');
+    return Boolean(canvas.getContext('webgl2') || canvas.getContext('webgl'));
+  } catch {
+    return false;
+  }
+})();
+let vectorFailed = false;
+
+function osmLayer() {
+  return L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 20,
     maxNativeZoom: 19,
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
-  }),
+    attribution: OSM_ATTRIBUTION,
+  });
+}
+
+// labelsOnly: solo le scritte (vie, luoghi, numeri civici), da mettere sopra il satellite.
+function vectorLayer(labelsOnly) {
+  const layer = L.maplibreGL({
+    style: labelsOnly ? { version: 8, sources: {}, layers: [] } : OFM_STYLE,
+    className: labelsOnly ? 'gl-labels' : 'gl-streets',
+  });
+  layer.on('add', () => {
+    const gl = layer.getMaplibreMap();
+    if (labelsOnly) {
+      gl.setStyle(OFM_STYLE, {
+        transformStyle: (_previous, next) => ({ ...next, layers: next.layers.filter((l) => l.type === 'symbol') }),
+      });
+    }
+    watchVectorLayer(layer, gl, labelsOnly);
+  });
+  return layer;
+}
+
+// Se lo stile non arriva (servizio irraggiungibile, rete che blocca il sito...) non lasciamo
+// la mappa bianca: si passa a OpenStreetMap. Gli errori di singole tile non contano.
+function watchVectorLayer(layer, gl, labelsOnly) {
+  let done = false;
+  const fail = (reason) => {
+    if (done || !navigator.onLine) return;
+    done = true;
+    clearTimeout(timer);
+    console.warn('Mappa vettoriale non disponibile:', reason);
+    if (labelsOnly) {
+      // Il satellite resta, senza le scritte.
+      if (baseLayer && baseLayer.hasLayer && baseLayer.hasLayer(layer)) baseLayer.removeLayer(layer);
+      return;
+    }
+    vectorFailed = true;
+    if (currentLayer === 'strade') {
+      setLayer('strade');
+      toast('La mappa principale non risponde: uso OpenStreetMap', true, 5000);
+    }
+  };
+  const timer = setTimeout(() => { if (!gl.isStyleLoaded()) fail('tempo scaduto'); }, VECTOR_TIMEOUT_MS);
+  gl.on('error', (e) => { if (!gl.isStyleLoaded()) fail(e && e.error ? e.error.message : 'errore'); });
+  gl.on('style.load', () => {
+    if (labelsOnly && !gl.getStyle().layers.length) return;  // stile vuoto iniziale
+    done = true;
+    clearTimeout(timer);
+  });
+  layer.on('remove', () => { done = true; clearTimeout(timer); });
+}
+
+// Tornata la connessione si riprova la mappa principale.
+window.addEventListener('online', () => {
+  if (!vectorFailed) return;
+  vectorFailed = false;
+  if (currentLayer === 'strade') setLayer('strade');
+});
+
+const LAYERS = {
+  strade: () => (vectorSupported && !vectorFailed ? vectorLayer(false) : osmLayer()),
   satellite: () => L.layerGroup([
     L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
       maxZoom: 20,
       maxNativeZoom: 19,
-      zIndex: 1,
       attribution: 'Immagini &copy; Esri, Maxar, Earthstar Geographics',
     }),
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png', {
-      subdomains: 'abcd',
-      maxZoom: 20,
-      maxNativeZoom: 19,
-      zIndex: 2,
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
-    }),
+    ...(vectorSupported ? [vectorLayer(true)] : []),
   ]),
-  osm: () => L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 20,
-    maxNativeZoom: 19,
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-  }),
+  osm: osmLayer,
 };
 let baseLayer;
+let currentLayer = null;
 
 function initMap() {
   const saved = loadJson('cabine.view', null);
   map = L.map('map', { zoomControl: false, maxZoom: 20 });
-  setLayer(LAYERS[load('cabine.layer')] ? load('cabine.layer') : 'strade');
+  // Prima la vista, poi lo sfondo: la mappa vettoriale ha bisogno di centro e zoom.
   if (saved) map.setView(saved.center, saved.zoom);
   else map.setView(DEFAULT_VIEW.center, DEFAULT_VIEW.zoom);
+  setLayer(LAYERS[load('cabine.layer')] ? load('cabine.layer') : 'strade');
   // Registrato dopo setView, così la vista predefinita non viene salvata come scelta dell'utente.
   map.on('moveend', () => {
     const c = map.getCenter();
@@ -430,6 +497,7 @@ function initMap() {
 
 function setLayer(name) {
   if (baseLayer) map.removeLayer(baseLayer);
+  currentLayer = name;
   baseLayer = LAYERS[name]().addTo(map);
   store('cabine.layer', name);
   document.querySelectorAll('#layers-menu [data-layer]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.layer === name)));

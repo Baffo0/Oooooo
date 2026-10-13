@@ -4,7 +4,7 @@
 // presi dalla rete quando possibile e dalla cache quando si è offline.
 // Dati (/api), tile della mappa e percorsi non passano dalla cache.
 
-const CACHE = 'cabine-v4';
+const CACHE = 'cabine-v5';
 const SHELL = [
   './',
   'index.html',
@@ -18,6 +18,9 @@ const SHELL = [
   'icons/icon.svg',
   'icons/icon-192.png',
   'vendor/leaflet/leaflet.js',
+  'vendor/maplibre/maplibre-gl.js',
+  'vendor/maplibre/maplibre-gl.css',
+  'vendor/maplibre/leaflet-maplibre-gl.js',
   'vendor/leaflet/leaflet.css',
   'vendor/leaflet/images/layers.png',
   'vendor/leaflet/images/layers-2x.png',

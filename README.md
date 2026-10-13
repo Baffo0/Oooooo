@@ -107,9 +107,9 @@ npm test
 
 Sono tutti gratuiti e non serve nessuna chiave o registrazione:
 
-- mappa stradale: [CARTO](https://carto.com/basemaps) su dati © [OpenStreetMap](https://www.openstreetmap.org/copyright);
-- satellite: Esri World Imagery;
+- mappa stradale: [OpenFreeMap](https://openfreemap.org) (stile "liberty", mappe vettoriali disegnate con [MapLibre](https://maplibre.org)) su dati © [OpenStreetMap](https://www.openstreetmap.org/copyright); se non risponde l'app passa da sola alle tile di OpenStreetMap;
+- satellite: Esri World Imagery, con le scritte di vie e luoghi di OpenFreeMap;
 - percorsi: [OSRM](https://project-osrm.org) sul server pubblico di [FOSSGIS](https://routing.openstreetmap.de);
 - indirizzi: [Nominatim](https://nominatim.org).
 
-Sono servizi pubblici pensati per un uso moderato, che per una squadra va benissimo. Se l'app dovesse essere usata da un'intera azienda, conviene verificare le condizioni d'uso di CARTO, Esri e FOSSGIS oppure passare a un fornitore a pagamento.
+Sono servizi pubblici pensati per un uso moderato, che per una squadra va benissimo. Se l'app dovesse essere usata da un'intera azienda, conviene verificare le condizioni d'uso di OpenFreeMap, Esri e FOSSGIS oppure passare a un fornitore a pagamento.

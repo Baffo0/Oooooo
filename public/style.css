@@ -849,6 +849,9 @@ details summary { cursor: pointer; font-weight: 650; padding: 10px 0 2px; color:
 .toast.error-toast { background: #9b1c1c; }
 
 .leaflet-container { font: inherit; }
+/* Mappa vettoriale (MapLibre dentro Leaflet): sopra le tile raster, così sul satellite
+   le scritte di vie e luoghi restano visibili. */
+.leaflet-tile-pane .leaflet-gl-layer { z-index: 2; }
 .leaflet-control-attribution { font-size: 10px; }
 .leaflet-popup-content { margin: 12px 14px; }
 .leaflet-popup-content .btn { margin-top: 8px; }

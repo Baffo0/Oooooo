@@ -381,8 +381,10 @@ const SECURITY_HEADERS = {
     "default-src 'self'",
     "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: blob: https://*.basemaps.cartocdn.com https://tile.openstreetmap.org https://server.arcgisonline.com",
-    "connect-src 'self' https://nominatim.openstreetmap.org https://routing.openstreetmap.de",
+    "img-src 'self' data: blob: https://tiles.openfreemap.org https://tile.openstreetmap.org https://server.arcgisonline.com",
+    "connect-src 'self' https://tiles.openfreemap.org https://nominatim.openstreetmap.org https://routing.openstreetmap.de",
+    // MapLibre elabora le tile vettoriali in un worker creato da blob:.
+    "worker-src 'self' blob:",
     "frame-ancestors 'none'",
     "base-uri 'none'",
     "form-action 'self'",
