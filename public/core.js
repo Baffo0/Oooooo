@@ -109,6 +109,7 @@
       if (!item || typeof item !== 'object') throw new CoreError(400, `Punto ${i + 1} non valido`);
       try {
         cabinetFields(item);
+        cleanText(item.clientId, 40);
       } catch (err) {
         throw new CoreError(400, `Punto ${i + 1} (${String(item.code || '').slice(0, 40) || 'senza nome'}): ${err.message}`);
       }
@@ -139,6 +140,18 @@
       out.push({ id: ctx.newId(), by, at, text });
     }
     return out;
+  }
+
+  // "Annulla" subito dopo un'importazione: si tolgono le cabine importate (per clientId) che
+  // nessuno ha ancora toccato, cioè senza foto e mai modificate. Le altre restano.
+  function undoImport(db, body) {
+    const ids = body && body.clientIds;
+    if (!Array.isArray(ids) || ids.length > MAX_IMPORT) throw new CoreError(400, 'Elenco non valido');
+    const wanted = new Set(ids.filter((id) => typeof id === 'string' && id.startsWith('imp-')));
+    const removed = db.cabinets.filter((c) => wanted.has(c.clientId) && !c.photos.length && c.updatedAt === c.createdAt);
+    const gone = new Set(removed);
+    db.cabinets = db.cabinets.filter((c) => !gone.has(c));
+    return removed;
   }
 
   // Se il salvataggio su disco fallisce si tolgono le cabine appena aggiunte: riprovando
@@ -229,6 +242,7 @@
     findCabinet,
     createCabinet,
     importCabinets,
+    undoImport,
     undoCreate,
     updateCabinet,
     deleteCabinet,

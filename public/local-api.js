@@ -117,6 +117,20 @@
       return ok(result.created ? 201 : 200, result.cabinet);
     }
 
+    if (path === '/api/cabinets/import/undo' && method === 'POST') {
+      const before = db.cabinets;
+      const removed = Core.undoImport(db, body || {});
+      if (removed.length) {
+        try {
+          await saveArchive();
+        } catch {
+          db.cabinets = before;
+          throw new Core.CoreError(507, 'Salvataggio sul telefono non riuscito: memoria piena?');
+        }
+      }
+      return ok(200, { removed: removed.length });
+    }
+
     if (path === '/api/cabinets/import' && method === 'POST') {
       const { created, existing, added } = Core.importCabinets(db, body || {}, ctx);
       if (created) await saveOrUndo(db, added);

@@ -330,3 +330,28 @@ test('se il salvataggio fallisce le cabine appena aggiunte si tolgono', () => {
   assert.equal(db.cabinets.length, 0);
   assert.equal(Core.importCabinets(db, body, ctx).created, 2);
 });
+
+test('annulla importazione: toglie solo le cabine importate e non toccate', async () => {
+  const cabinets = [1, 2, 3].map((i) => ({ clientId: `imp-annulla-${i}`, code: `PFS annulla ${i}`, type: 'PFS', lat: 41.3 + i * 0.01, lng: 14.3 }));
+  await call('POST', '/api/cabinets/import', { body: { cabinets } });
+  const list = (await call('GET', '/api/cabinets')).data.cabinets;
+  const touched = list.find((c) => c.clientId === 'imp-annulla-2');
+  await call('PUT', `/api/cabinets/${touched.id}`, { body: { status: 'fatto' } });
+  const undo = await call('POST', '/api/cabinets/import/undo', { body: { clientIds: cabinets.map((c) => c.clientId).concat('vecchia', 'non-imp') } });
+  assert.equal(undo.status, 200);
+  assert.equal(undo.data.removed, 2);
+  const after = (await call('GET', '/api/cabinets')).data.cabinets;
+  assert.ok(after.some((c) => c.clientId === 'imp-annulla-2'));
+  assert.ok(!after.some((c) => c.clientId === 'imp-annulla-1' || c.clientId === 'imp-annulla-3'));
+  assert.ok(after.some((c) => c.id === 'vecchia'));
+  assert.equal((await call('POST', '/api/cabinets/import/undo', { body: { clientIds: 'x' } })).status, 400);
+});
+
+test('importazione: un clientId non valido rifiuta tutto senza aggiungere nulla', async () => {
+  const before = (await call('GET', '/api/cabinets')).data.cabinets.length;
+  const res = await call('POST', '/api/cabinets/import', { body: { cabinets: [
+    { clientId: 'imp-ok-x', lat: 41, lng: 14 }, { clientId: 12345, lat: 41, lng: 14 },
+  ] } });
+  assert.equal(res.status, 400);
+  assert.equal((await call('GET', '/api/cabinets')).data.cabinets.length, before);
+});

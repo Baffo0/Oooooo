@@ -157,6 +157,22 @@ function toast(message, isError = false, ms = 3500) {
   toastTimer = setTimeout(() => { el.hidden = true; }, ms);
 }
 
+// Avviso con un'azione (es. "Annulla"), che resta un po' di più.
+function toastAction(message, label, onClick, ms = 10000) {
+  toast(message, false, ms);
+  const el = $('#toast');
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'toast-action';
+  btn.textContent = label;
+  btn.addEventListener('click', () => {
+    clearTimeout(toastTimer);
+    el.hidden = true;
+    onClick();
+  }, { once: true });
+  el.append(' ', btn);
+}
+
 function isDesktop() {
   return window.matchMedia('(min-width: 900px)').matches;
 }
@@ -171,7 +187,7 @@ class ApiError extends Error {
   }
 }
 
-async function api(path, { method = 'GET', body, headers = {} } = {}) {
+async function api(path, { method = 'GET', body, headers = {}, timeout } = {}) {
   let status;
   let data = null;
   let etag = null;
@@ -188,8 +204,9 @@ async function api(path, { method = 'GET', body, headers = {} } = {}) {
     }
     // Con segnale debolissimo una richiesta può restare appesa per minuti: le letture si
     // interrompono prima, così l'app passa a "Offline" e riprova più tardi.
-    const ctrl = method === 'GET' ? new AbortController() : null;
-    const timer = ctrl && setTimeout(() => ctrl.abort(), API_TIMEOUT_MS);
+    const ms = timeout ?? (method === 'GET' ? API_TIMEOUT_MS : 0);
+    const ctrl = ms ? new AbortController() : null;
+    const timer = ctrl && setTimeout(() => ctrl.abort(), ms);
     try {
       const res = await fetch(path, { ...opts, signal: ctrl?.signal });
       status = res.status;
@@ -2074,7 +2091,8 @@ function exportGeoJson() {
 }
 
 function exportKml() {
-  const x = (s) => esc(s);
+  // Caratteri di controllo (arrivati da altri programmi) renderebbero il file illeggibile.
+  const x = (s) => esc(String(s ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, ''));
   // Le colonne in ExtendedData permettono di reimportare il file senza perdere stato e indirizzo.
   const data = (name, value) => `<Data name="${name}"><value>${x(value)}</value></Data>`;
   const placemarks = state.cabinets.map((c) => `
@@ -2103,10 +2121,12 @@ const IMPORT_BATCH = 500; // punti per richiesta: con molti punti si va a blocch
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 const normName = (s) => String(s || '').trim().replace(/\s+/g, ' ').toLowerCase();
 
-// Le versioni dell'app Android precedenti alla 0.1.9 sanno scegliere solo foto.
+// Le versioni dell'app Android precedenti alla 0.1.9 sanno scegliere solo foto; le successive
+// lo dicono con "CabineFibraFiles" (anche quelle compilate fuori da GitHub).
 function apkTooOld() {
-  const m = navigator.userAgent.match(/CabineFibraApp\/0\.1\.(\d+)/);
-  return Boolean(m) && Number(m[1]) < 9;
+  const ua = navigator.userAgent;
+  const m = ua.match(/CabineFibraApp\/0\.1\.(\d+)/);
+  return Boolean(m) && !/CabineFibraFiles\//.test(ua) && Number(m[1]) < 9;
 }
 
 function hideToast() {
@@ -2147,17 +2167,18 @@ $('#import-input').addEventListener('change', async (e) => {
 
 // Cabine vicine a un punto: indice a celle di circa 10 m, per non confrontare tutto con tutto.
 function nearIndex(list) {
-  const cell = (lat, lng) => `${Math.floor(lat * 1e4)}|${Math.floor(lng * 1e4)}`;
   const grid = new Map();
   for (const c of list) {
-    const k = cell(c.lat, c.lng);
+    const k = `${Math.floor(c.lat * 1e4)}|${Math.floor(c.lng * 1e4)}`;
     if (!grid.has(k)) grid.set(k, []);
     grid.get(k).push(c);
   }
   return (p, meters, match = () => true) => {
+    const cy = Math.floor(p.lat * 1e4);
+    const cx = Math.floor(p.lng * 1e4);
     for (let dy = -1; dy <= 1; dy++) {
       for (let dx = -1; dx <= 1; dx++) {
-        const near = grid.get(cell(p.lat + dy * 1e-4, p.lng + dx * 1e-4)) || [];
+        const near = grid.get(`${cy + dy}|${cx + dx}`) || [];
         if (near.some((c) => distance(c, p) < meters && match(c))) return true;
       }
     }
@@ -2165,11 +2186,12 @@ function nearIndex(list) {
   };
 }
 
-// Già nell'archivio: importato prima (stesso identificativo, o un punto dello stesso tipo
-// importato a meno di 2 m, cioè solo rinominato su My Maps), con lo stesso nome a meno di
-// 50 m oppure, se senza nome, con un'altra cabina a meno di 3 m.
+// Già nell'archivio: importato prima (stesso identificativo), con lo stesso nome a meno di
+// 50 m, senza nome con un'altra cabina a meno di 3 m, oppure rinominato su My Maps: una cabina
+// importata dello stesso tipo a meno di 2 m il cui punto non c'è più nel file.
 function markPresent(points) {
   const ids = new Set(state.cabinets.map((c) => c.clientId).filter(Boolean));
+  const inFile = new Set(points.map((p) => p.clientId));
   const nearImported = nearIndex(state.cabinets.filter((c) => c.clientId?.startsWith('imp-')));
   const nearAny = nearIndex(state.cabinets);
   const byName = new Map();
@@ -2181,7 +2203,8 @@ function markPresent(points) {
   }
   const sameName = (key, p) => Boolean(key) && (byName.get(key) || []).some((c) => distance(c, p) < 50);
   for (const p of points) {
-    p.present = ids.has(p.clientId) || nearImported(p, 2, (c) => !p.type || c.type === p.type) || sameName(normName(p.code), p)
+    p.present = ids.has(p.clientId) || nearImported(p, 2, (c) => (!p.type || c.type === p.type) && !inFile.has(c.clientId))
+      || sameName(normName(p.code), p)
       || sameName(normName(p.idName), p) || (!p.code && nearAny(p, 3));
   }
 }
@@ -2227,7 +2250,7 @@ function renderImportGroups() {
   $('#import-groups').innerHTML = importState.groupings[key].map((g) => {
     const already = present.get(g.name) || 0;
     return `<label class="import-group">
-      <input type="checkbox" data-group="${esc(g.name)}"${importState.unchecked.has(g.name) ? '' : ' checked'}>
+      <input type="checkbox" data-group="${esc(g.name)}"${importState.unchecked.has(g.name) ? '' : ' checked'}${importState.busy ? ' disabled' : ''}>
       <span class="import-group-text">
         <span class="import-group-name">${esc(g.name)}</span>
         <span class="import-group-count">${plural(g.count, 'punto', 'punti')}${already ? ` · ${already === g.count ? 'già tutti presenti' : `${already} già ${already === 1 ? 'presente' : 'presenti'}`}` : ''}</span>
@@ -2241,28 +2264,43 @@ function renderImportGroups() {
 function importPlan() {
   const key = importState.grouping;
   const selected = importState.points.filter((p) => !importState.unchecked.has(p.groups[key]));
-  const seen = new Set();
-  const fresh = [];
+  // Lo stesso punto due volte nel file: se ne importa uno, quello nel livello che ha il nome
+  // della sua zona (es. la copia in NA_02 per un punto della zona NA_02).
+  const chosen = new Map();
+  const fits = (p) => p.folder.split(' › ').pop() === p.groups[key];
+  let present = 0;
   for (const p of selected) {
-    if (p.present || seen.has(p.clientId)) continue;
-    seen.add(p.clientId);
-    fresh.push(p);
+    if (p.present) {
+      present += 1;
+      continue;
+    }
+    const other = chosen.get(p.clientId);
+    if (!other || (!fits(other) && fits(p))) chosen.set(p.clientId, p);
   }
-  return { selected, fresh, skip: selected.length - fresh.length };
+  const fresh = [...chosen.values()];
+  return { selected, fresh, present, doubles: selected.length - present - fresh.length };
 }
 
 function updateImportSummary() {
   const form = $('#import-form');
-  const { selected, fresh, skip } = importPlan();
+  const { selected, fresh, present, doubles } = importPlan();
   const own = fresh.filter((p) => p.type && p.type !== form.type.value);
   $('#import-type-note').textContent = own.length
-    ? `${own.length === 1 ? '1 punto ha' : `${own.length} punti hanno`} un altro tipo scritto nel nome o nella tabella `
-      + `(es. ${TYPE_LABELS[own[0].type].split(' – ')[0]}) e lo tiene${own.length === 1 ? '' : 'no'}.`
+    ? `${own.length === 1 ? '1 punto ha' : `${own.length} punti hanno`} un altro tipo scritto nel nome, nella tabella o nel livello `
+      + `(es. ${TYPE_LABELS[own[0].type].split(' – ')[0]}) e ${own.length === 1 ? 'lo tiene' : 'lo tengono'}.`
     : '';
+  // Quali gruppi sono scelti, scritto per esteso: quelli in fondo all'elenco non si vedono.
+  const all = importState.groupings[importState.grouping].map((g) => g.name);
+  const picked = all.filter((g) => !importState.unchecked.has(g));
   let text;
   if (fresh.length) {
     text = fresh.length === 1 ? 'Verrà aggiunta 1 cabina' : `Verranno aggiunte ${fresh.length} cabine`;
-    if (skip) text += ` · ${plural(skip, 'c\'è già e viene saltata', 'ci sono già e vengono saltate')}`;
+    if (all.length > 1) {
+      text += picked.length === all.length ? ` da tutti i ${all.length} gruppi`
+        : picked.length <= 3 ? ` da ${picked.join(', ')}` : ` da ${picked.length} gruppi su ${all.length} (${picked[0]} … ${picked[picked.length - 1]})`;
+    }
+    if (present) text += ` · ${plural(present, 'c\'è già e viene saltata', 'ci sono già e vengono saltate')}`;
+    if (doubles) text += ` · ${plural(doubles, 'doppione nel file', 'doppioni nel file')}`;
     text += '.';
   } else {
     text = selected.length ? 'Le cabine scelte ci sono già tutte.' : 'Scegli almeno un gruppo.';
@@ -2315,7 +2353,7 @@ $('#import-dialog').addEventListener('cancel', (e) => {
 
 function importErrorMessage(err) {
   if (err instanceof ApiError) return err.status === 413 ? 'Troppi dati in una volta: importa meno gruppi alla volta' : err.message;
-  return LOCAL ? 'Salvataggio sul telefono non riuscito' : 'Serve la connessione per importare: riprova quando c\'è campo';
+  return LOCAL ? 'Salvataggio sul telefono non riuscito' : 'La connessione non risponde: riprova quando c\'è campo';
 }
 
 // Dopo l'importazione si vedono le cabine nuove: via filtri e ricerca che le nasconderebbero.
@@ -2353,36 +2391,54 @@ $('#import-form').addEventListener('submit', async (e) => {
   setImportBusy(true);
   let created = 0;
   let existing = 0;
+  let sent = 0;
   try {
     for (let i = 0; i < list.length; i += IMPORT_BATCH) {
       $('#import-go').textContent = list.length > IMPORT_BATCH
         ? `Importo… ${Math.min(i + IMPORT_BATCH, list.length)} di ${list.length}` : 'Importo…';
-      const { data } = await api('/api/cabinets/import', { method: 'POST', body: { cabinets: list.slice(i, i + IMPORT_BATCH) } });
+      // Con poco segnale non si resta bloccati: dopo 90 s si può riprovare senza doppioni.
+      const { data } = await api('/api/cabinets/import', { method: 'POST', body: { cabinets: list.slice(i, i + IMPORT_BATCH) }, timeout: 90000 });
       created += data.created;
       existing += data.existing;
+      sent = i + IMPORT_BATCH;
     }
     setImportBusy(false);
     $('#import-dialog').close();
     state.localChanges += 1;
     state.etag = null;
     showImported(list);
-    toast(`${created === 1 ? 'Importata 1 cabina' : `Importate ${created} cabine`}${existing ? ` (${existing} c'${existing === 1 ? 'era' : 'erano'} già)` : ''}`, false, 5000);
+    const text = `${created === 1 ? 'Importata 1 cabina' : `Importate ${created} cabine`}${existing ? ` (${existing} c'${existing === 1 ? 'era' : 'erano'} già)` : ''}`;
+    if (created) toastAction(text, 'Annulla', () => undoImport(list.map((p) => p.clientId)), 12000);
+    else toast(text, false, 5000);
     await refresh();
   } catch (err) {
+    // Quelle già arrivate risultano presenti: riprovando si invia solo il resto.
+    const arrived = new Set(list.slice(0, sent).map((p) => p.clientId));
+    for (const p of importState.points) if (arrived.has(p.clientId)) p.present = true;
     setImportBusy(false);
+    if ($('#import-dialog').open) renderImportGroups();
     $('#import-error').textContent = (created ? `${plural(created, 'cabina importata', 'cabine importate')} prima dell'errore. ` : '')
       + importErrorMessage(err);
     if (created) {
-      // Riprovando, quelle già arrivate vengono riconosciute e saltate.
       state.localChanges += 1;
       state.etag = null;
-      refresh().then(() => {
-        markPresent(importState.points);
-        if ($('#import-dialog').open) renderImportGroups();
-      });
+      refresh();
     }
   }
 });
+
+// Annulla l'ultima importazione: si tolgono le cabine appena create (non quelle già modificate).
+async function undoImport(clientIds) {
+  try {
+    const { data } = await api('/api/cabinets/import/undo', { method: 'POST', body: { clientIds }, timeout: 90000 });
+    state.localChanges += 1;
+    state.etag = null;
+    toast(data.removed === 1 ? 'Importazione annullata: tolta 1 cabina' : `Importazione annullata: tolte ${data.removed} cabine`, false, 5000);
+    await refresh();
+  } catch (err) {
+    toast(err instanceof ApiError ? err.message : 'Non riesco ad annullare: controlla la connessione e riprova dal menu', true, 6000);
+  }
+}
 
 // Tasto Indietro di Android ed Esc: chiude la cosa aperta più in alto.
 // Restituisce false quando non c'è niente da chiudere (l'app Android allora va in secondo piano).

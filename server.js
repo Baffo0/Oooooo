@@ -297,6 +297,21 @@ async function handleApi(req, res, url) {
     return sendJson(res, result.created ? 201 : 200, result.cabinet);
   }
 
+  if (pathname === '/api/cabinets/import/undo' && method === 'POST') {
+    const before = db.cabinets;
+    const removed = Core.undoImport(db, await readJson(req, MAX_IMPORT_BYTES));
+    if (removed.length) {
+      try {
+        await persist();
+      } catch (err) {
+        db.cabinets = before;
+        etag = computeEtag();
+        throw err;
+      }
+    }
+    return sendJson(res, 200, { removed: removed.length });
+  }
+
   if (pathname === '/api/cabinets/import' && method === 'POST') {
     const { created, existing, added } = Core.importCabinets(db, await readJson(req, MAX_IMPORT_BYTES), ctx);
     if (created) await persistOrUndo(added);

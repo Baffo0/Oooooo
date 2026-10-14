@@ -266,7 +266,8 @@ public class MainActivity extends AppCompatActivity {
         s.setAllowContentAccess(true);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         // Permette al server (e alla web app) di riconoscere che gira dentro l'APK.
-        s.setUserAgentString(s.getUserAgentString() + " CabineFibraApp/" + BuildConfig.VERSION_NAME);
+        // CabineFibraFiles/1: questa versione sa scegliere anche file che non sono foto (KML, KMZ).
+        s.setUserAgentString(s.getUserAgentString() + " CabineFibraApp/" + BuildConfig.VERSION_NAME + " CabineFibraFiles/1");
 
         CookieManager.getInstance().setAcceptCookie(true);
 

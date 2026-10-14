@@ -93,6 +93,7 @@ Metti davanti un proxy con HTTPS, per esempio [Caddy](https://caddyserver.com): 
 5. Scegli il tipo (PFS, PTE…) per i punti che non lo hanno nel nome e lo stato iniziale, poi **Importa**.
 
 Indirizzo e descrizione arrivano dalle colonne della mappa, il nome del livello finisce nelle note. Reimportando lo stesso file non si creano doppioni.
+Se hai importato i gruppi sbagliati, tocca **Annulla** nell'avviso che compare subito dopo: le cabine appena importate (e non ancora modificate) vengono tolte.
 Funziona anche con i file di Google Earth e con il GeoJSON esportato dall'app (che conserva stato e diario interventi).
 
 ## Sul telefono
