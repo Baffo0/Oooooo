@@ -56,20 +56,19 @@
     return archive;
   }
 
+  // Telefono pieno: la modifica non resta solo in memoria (sembrerebbe salvata e sparirebbe al
+  // riavvio). L'archivio si rilegge dal telefono alla prossima richiesta.
   async function saveArchive() {
     archive.rev += 1;
-    await write(STORE_DATA, 'archive', archive);
-  }
-
-  // Telefono pieno: le cabine appena aggiunte non restano solo in memoria.
-  async function saveOrUndo(db, added) {
     try {
-      await saveArchive();
-    } catch (err) {
-      Core.undoCreate(db, added);
+      await write(STORE_DATA, 'archive', archive);
+    } catch {
+      archive = null;
       throw new Core.CoreError(507, 'Salvataggio sul telefono non riuscito: memoria piena?');
     }
   }
+
+  const saveOrUndo = () => saveArchive();
 
   function newId() {
     const bytes = new Uint8Array(9);
@@ -118,23 +117,15 @@
     }
 
     if (path === '/api/cabinets/import/undo' && method === 'POST') {
-      const before = db.cabinets;
-      const removed = Core.undoImport(db, body || {});
-      if (removed.length) {
-        try {
-          await saveArchive();
-        } catch {
-          db.cabinets = before;
-          throw new Core.CoreError(507, 'Salvataggio sul telefono non riuscito: memoria piena?');
-        }
-      }
+      const removed = Core.undoImport(db, body || {}, ctx);
+      if (removed.length) await saveArchive();
       return ok(200, { removed: removed.length });
     }
 
     if (path === '/api/cabinets/import' && method === 'POST') {
       const { created, existing, added } = Core.importCabinets(db, body || {}, ctx);
       if (created) await saveOrUndo(db, added);
-      return ok(200, { created, existing });
+      return ok(200, { created, existing, ids: added.map((c) => c.clientId) });
     }
 
     let m = path.match(/^\/api\/cabinets\/([\w-]+)$/);

@@ -29,6 +29,10 @@ test('indicazioni in italiano', () => {
   assert.equal(say({ type: 'continue', modifier: 'uturn' }), 'Fai inversione a U');
   assert.equal(say({ type: 'arrive', modifier: 'left' }), 'Sei arrivato: la cabina è sulla sinistra');
   assert.equal(say({ type: 'depart' }, 'Via Verdi'), 'Parti su Via Verdi');
+  // "continue" con svolta: la strada gira all'incrocio, il testo deve dirlo come la freccia.
+  assert.equal(say({ type: 'continue', modifier: 'left' }, 'Via Roma'), 'Svolta a sinistra per restare su Via Roma');
+  assert.equal(say({ type: 'continue', modifier: 'sharp right' }), 'Svolta decisamente a destra');
+  assert.equal(say({ type: 'continue', modifier: 'straight' }, 'Via Roma'), 'Prosegui su Via Roma');
 });
 
 test('icone delle manovre', () => {

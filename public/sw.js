@@ -6,7 +6,7 @@
 // solo insieme alla versione della cache: si prendono subito dal telefono.
 // Dati (/api), tile della mappa e percorsi non passano dalla cache.
 
-const CACHE = 'cabine-v7';
+const CACHE = 'cabine-v8';
 const NETWORK_TIMEOUT_MS = 4000;
 const SHELL = [
   './',
@@ -31,7 +31,10 @@ const SHELL = [
 ];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting()));
+  // cache: 'reload': i file nuovi dal server, non le copie (anche di 7 giorni) del browser.
+  event.waitUntil(caches.open(CACHE)
+    .then((cache) => cache.addAll(SHELL.map((url) => new Request(url, { cache: 'reload' }))))
+    .then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (event) => {
@@ -42,10 +45,26 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+// Pagine aperte dalla copia sul telefono (rete lenta): anche i loro script vengono dalla copia,
+// così pagina e script sono sempre della stessa versione.
+const fromCacheClients = new Set();
+
 self.addEventListener('fetch', (event) => {
-  const url = new URL(event.request.url);
-  if (event.request.method !== 'GET' || url.origin !== self.location.origin || url.pathname.startsWith('/api/')) return;
-  event.respondWith(url.pathname.includes('/vendor/') ? cacheFirst(event.request) : networkFirst(event.request));
+  const { request } = event;
+  const url = new URL(request.url);
+  if (request.method !== 'GET' || url.origin !== self.location.origin || url.pathname.startsWith('/api/')) return;
+  if (url.pathname.includes('/vendor/')) {
+    event.respondWith(cacheFirst(request));
+  } else if (request.mode === 'navigate') {
+    event.respondWith(networkFirst(request).then(({ res, cached }) => {
+      if (cached && event.resultingClientId) fromCacheClients.add(event.resultingClientId);
+      return res;
+    }));
+  } else if (fromCacheClients.has(event.clientId)) {
+    event.respondWith(cacheFirst(request));
+  } else {
+    event.respondWith(networkFirst(request).then(({ res }) => res));
+  }
 });
 
 function fromNetwork(request) {
@@ -67,17 +86,22 @@ function cacheFirst(request) {
   return caches.match(request).then((hit) => hit || fromNetwork(request));
 }
 
+// Risponde { res, cached }: la rete, oppure la copia sul telefono se la rete non risponde in
+// tempo, non c'è, o il server è fermo (errore 5xx durante un riavvio o un aggiornamento).
 function networkFirst(request) {
   return new Promise((resolve) => {
     let done = false;
-    const answer = (res) => {
+    const answer = (res, cached) => {
       if (done || !res) return;
       done = true;
       clearTimeout(timer);
-      resolve(res);
+      resolve({ res, cached });
     };
-    // Rete lenta: se c'è una copia sul telefono si usa quella (la rete intanto aggiorna la cache).
-    const timer = setTimeout(() => fromCache(request).then(answer), NETWORK_TIMEOUT_MS);
-    fromNetwork(request).then(answer, () => fromCache(request).then((hit) => answer(hit || Response.error())));
+    const cachedOr = (fallback) => fromCache(request).then((hit) => answer(hit || fallback, Boolean(hit)));
+    const timer = setTimeout(() => fromCache(request).then((hit) => answer(hit, true)), NETWORK_TIMEOUT_MS);
+    fromNetwork(request).then(
+      (res) => (res.status >= 500 ? cachedOr(res) : answer(res, false)),
+      () => cachedOr(Response.error()),
+    );
   });
 }

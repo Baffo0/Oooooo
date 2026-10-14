@@ -135,7 +135,9 @@
       case 'new name':
         return road ? `Prosegui su ${road}` : 'Prosegui dritto';
       case 'continue':
+        // "continue" con una svolta: la strada gira all'incrocio e la si segue (l'altra va dritta).
         if (mod === 'uturn' || mod.startsWith('slight')) return cap(TURNS[mod]) + on;
+        if (TURNS[mod] && mod !== 'straight') return cap(TURNS[mod]) + (road ? ` per restare su ${road}` : '');
         return road ? `Prosegui su ${road}` : 'Prosegui dritto';
       default:
         return cap(TURNS[mod] || 'prosegui') + on;

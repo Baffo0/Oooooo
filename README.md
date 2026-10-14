@@ -68,11 +68,12 @@ Deve anche avere un **disco permanente**: i servizi gratuiti senza disco cancell
 ```bash
 docker build -t mappa-cabine .
 docker run -d --name mappa-cabine --restart unless-stopped \
-  -p 3000:3000 -e TEAM_PASSWORD=scegli-una-password \
+  -p 127.0.0.1:3000:3000 -e TEAM_PASSWORD=scegli-una-password \
   -v cabine-dati:/data mappa-cabine
 ```
 
 Metti davanti un proxy con HTTPS, per esempio [Caddy](https://caddyserver.com): `caddy reverse-proxy --from cabine.tuodominio.it --to localhost:3000`.
+La porta 3000 resta raggiungibile solo dal server stesso: da fuori si entra soltanto passando dal proxy in HTTPS.
 
 ### Impostazioni
 
@@ -83,6 +84,7 @@ Metti davanti un proxy con HTTPS, per esempio [Caddy](https://caddyserver.com): 
 | `PORT` | Porta del server | `3000` |
 | `SESSION_DAYS` | Dopo quanti giorni bisogna rifare l'accesso | `90` |
 | `SESSION_SECRET` | Chiave per firmare gli accessi. Se manca viene generata e salvata in `DATA_DIR` | generata |
+| `TRUST_PROXY` | `1` se davanti c'è un proxy su un'altra macchina (serve per contare i tentativi di accesso per ogni telefono), `0` se il server è esposto direttamente | automatico: si fida solo di proxy sulla stessa rete |
 
 ## Importare i punti da Google My Maps
 

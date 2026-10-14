@@ -15,8 +15,22 @@ const TYPE_SHORT = { PFP: 'PFP', PFS: 'PFS', PTE: 'PTE', PCN: 'PCN', POZZETTO: '
 const STATUS_LABELS = { da_fare: 'Da fare', in_corso: 'In corso', fatto: 'Fatto', problema: 'Problema' };
 const DEFAULT_VIEW = { center: [42.5, 12.5], zoom: 6 };
 const REFRESH_MS = 30000;
-const API_TIMEOUT_MS = 20000;
+const API_TIMEOUT_MS = 20000; // letture: fino all'arrivo della risposta
+const BODY_TIMEOUT_MS = 120000; // poi, per scaricare un elenco grande su una linea lenta
+const WRITE_TIMEOUT_MS = 30000; // salvataggi: riprovarli è sicuro, il server riconosce i doppioni
 const LOW_ACCURACY_M = 30;
+// Deve coincidere con data-app in index.html: se dopo un aggiornamento arrivano una pagina
+// vecchia e uno script nuovo (segnale debole), si ricarica una volta invece di restare bianchi.
+const APP_VERSION = '2026.10.14';
+if (document.documentElement.dataset.app !== APP_VERSION) {
+  let reloaded = null;
+  try { reloaded = sessionStorage.getItem('cabine.reload'); } catch { /* niente */ }
+  if (reloaded !== APP_VERSION) {
+    try { sessionStorage.setItem('cabine.reload', APP_VERSION); } catch { /* niente */ }
+    location.reload();
+  }
+  throw new Error('Pagina e app di versioni diverse');
+}
 
 const $ = (sel, root = document) => root.querySelector(sel);
 
@@ -57,7 +71,7 @@ const nav = {
   active: false,
   rerouting: false,
   lastReroute: 0,
-  abort: null,
+  aborts: {},
   wakeLock: null,
 };
 
@@ -86,7 +100,7 @@ function loadJson(key, fallback) {
 }
 
 function saveJson(key, value) {
-  store(key, JSON.stringify(value));
+  return store(key, JSON.stringify(value));
 }
 
 // localStorage può lanciare eccezioni (spazio esaurito, navigazione privata):
@@ -95,9 +109,18 @@ function store(key, value) {
   try {
     if (value === null) localStorage.removeItem(key);
     else localStorage.setItem(key, value);
+    return true;
   } catch {
-    /* archiviazione non disponibile */
+    return false; // archiviazione piena o non disponibile
   }
+}
+
+// La coda delle cabine da inviare viene prima della copia offline: se il telefono è pieno si
+// libera lo spazio della copia (si riscarica dal server) pur di non perdere una cabina.
+function savePending() {
+  if (saveJson('cabine.pending', state.pending)) return true;
+  store('cabine.cache', null);
+  return saveJson('cabine.pending', state.pending);
 }
 
 function load(key) {
@@ -204,11 +227,15 @@ async function api(path, { method = 'GET', body, headers = {}, timeout } = {}) {
     }
     // Con segnale debolissimo una richiesta può restare appesa per minuti: le letture si
     // interrompono prima, così l'app passa a "Offline" e riprova più tardi.
-    const ms = timeout ?? (method === 'GET' ? API_TIMEOUT_MS : 0);
+    const ms = timeout ?? (method === 'GET' ? API_TIMEOUT_MS : WRITE_TIMEOUT_MS);
     const ctrl = ms ? new AbortController() : null;
-    const timer = ctrl && setTimeout(() => ctrl.abort(), ms);
+    let timer = ctrl && setTimeout(() => ctrl.abort(), ms);
     try {
       const res = await fetch(path, { ...opts, signal: ctrl?.signal });
+      if (ctrl) {
+        clearTimeout(timer);
+        timer = setTimeout(() => ctrl.abort(), Math.max(ms, BODY_TIMEOUT_MS));
+      }
       status = res.status;
       etag = res.headers.get('etag');
       if (status !== 304 && res.headers.get('content-type')?.includes('application/json')) data = await res.json();
@@ -250,11 +277,28 @@ async function init() {
     }).catch(() => {});
     return;
   }
+  // Uscita fatta offline: prima si chiude davvero la sessione sul server, poi si chiede l'accesso
+  // (altrimenti il cookie rimasto farebbe entrare il prossimo collega col nome di chi è uscito).
+  if (!LOCAL && load('cabine.logoutPending')) {
+    try {
+      await api('/api/logout', { method: 'POST', timeout: 8000 });
+      store('cabine.logoutPending', null);
+    } catch { /* riprovo al prossimo avvio */ }
+    await loadConfig();
+    showLogin();
+    return;
+  }
+  // Primo avvio: impostazioni e accesso insieme; con una rete bloccata dopo pochi secondi compare
+  // comunque la pagina di accesso invece di uno schermo bianco.
+  const slow = setTimeout(() => { if (!state.me && $('#login').hidden && $('#app').hidden) showLogin(); }, 3000);
+  const me = api('/api/me').then(({ data }) => data, () => null);
   await loadConfig();
-  try {
-    state.me = (await api('/api/me')).data;
+  const data = await me;
+  clearTimeout(slow);
+  if (data) {
+    state.me = data;
     startApp();
-  } catch {
+  } else if ($('#login').hidden) {
     showLogin();
   }
 }
@@ -293,6 +337,7 @@ $('#login-form').addEventListener('submit', async (e) => {
     });
     form.password.value = '';
     store('cabine.lastName', data.name);
+    store('cabine.logoutPending', null);
     state.me = data;
     startApp();
   } catch (err) {
@@ -365,10 +410,12 @@ async function refresh() {
     state.offline = false;
     state.lastSync = new Date();
   } catch (err) {
-    if (isNetworkError(err)) state.offline = true;
+    // Rete assente o server fermo (riavvio, aggiornamento): si lavora sulla copia del telefono.
+    if (isNetworkError(err) || err.status >= 500) state.offline = true;
   } finally {
     refreshing = false;
     renderSync();
+    if (!state.lastSync && !state.cabinets.length) renderList(); // "caricamento" diventa "offline"
   }
 }
 
@@ -378,6 +425,7 @@ async function flushPending() {
     try {
       const { data } = await api('/api/cabinets', { method: 'POST', body: item });
       if (state.selectedId === item.clientId) state.selectedId = data.id;
+      if (nav.cabId === item.clientId) nav.cabId = data.id;
       state.pending.shift();
       upsertCabinet(data);
     } catch (err) {
@@ -386,7 +434,7 @@ async function flushPending() {
       toast(`Cabina "${cabinetTitle(item)}" non salvata: ${err.message}`, true, 6000);
       state.pending.shift();
     }
-    saveJson('cabine.pending', state.pending);
+    savePending();
   }
 }
 
@@ -395,7 +443,7 @@ function renderSync() {
   if (state.offline) parts.push('Offline');
   else if (state.lastSync) parts.push(`Aggiornato alle ${state.lastSync.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}`);
   if (state.pending.length) parts.push(`${state.pending.length} da inviare`);
-  $('#sync-status').textContent = parts.join(' · ');
+  $('#sync-status').textContent = parts.join(' · ') + (state.cacheFull ? ' · memoria del telefono piena: copia offline non aggiornata' : '');
   // Sulla mappa l'avviso compare solo quando c'è qualcosa da sapere.
   const pill = $('#sync-pill');
   pill.hidden = !state.offline && !state.pending.length;
@@ -422,7 +470,7 @@ function flushCache() {
   if (cacheTimer === null) return;
   clearTimeout(cacheTimer);
   cacheTimer = null;
-  if (state.me) saveJson('cabine.cache', { cabinets: state.cabinets, etag: state.etag });
+  if (state.me) state.cacheFull = !saveJson('cabine.cache', { cabinets: state.cabinets, etag: state.etag });
 }
 document.addEventListener('visibilitychange', () => { if (document.hidden) flushCache(); });
 window.addEventListener('pagehide', flushCache);
@@ -452,6 +500,7 @@ const vectorSupported = (() => {
   }
 })();
 let vectorFailed = false;
+let vectorRetry = false;
 
 function osmLayer() {
   return L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -491,7 +540,11 @@ function vectorLayer(labelsOnly) {
 function watchVectorLayer(layer, gl, labelsOnly) {
   let done = false;
   const fail = (reason) => {
-    if (done || !navigator.onLine) return;
+    if (done) return;
+    if (!navigator.onLine) {
+      vectorRetry = true; // si riprova quando torna la connessione
+      return;
+    }
     done = true;
     clearTimeout(timer);
     console.warn('Mappa vettoriale non disponibile:', reason);
@@ -518,9 +571,15 @@ function watchVectorLayer(layer, gl, labelsOnly) {
 
 // Tornata la connessione si riprova la mappa principale.
 window.addEventListener('online', () => {
-  if (!vectorFailed) return;
-  vectorFailed = false;
-  if (currentLayer === 'strade') setLayer('strade');
+  if (vectorFailed || vectorRetry) {
+    vectorFailed = false;
+    vectorRetry = false;
+    if (currentLayer) setLayer(currentLayer);
+    return;
+  }
+  // Tile non arrivate durante un buco di segnale: si chiedono di nuovo.
+  if (baseLayer?.redraw) baseLayer.redraw();
+  baseLayer?.eachLayer?.((l) => l.redraw?.());
 });
 
 const LAYERS = {
@@ -595,7 +654,8 @@ $('#btn-layers').addEventListener('click', () => {
 $('#layers-menu').addEventListener('click', (e) => {
   const b = e.target.closest('[data-layer]');
   if (!b) return;
-  setLayer(b.dataset.layer);
+  // Lo strato già in uso non si ricarica (niente mappa bianca e nuovi download).
+  if (b.dataset.layer !== currentLayer) setLayer(b.dataset.layer);
   closeLayersMenu();
 });
 $('#btn-zoom-in').addEventListener('click', () => map.zoomIn());
@@ -629,7 +689,7 @@ function markerKey(cab, pending, id) {
   return `${pending ? 'p' : cab.status}|${cab.type}|${cabinetTitle(cab)}|${cab.lat}|${cab.lng}|${id === state.selectedId}`;
 }
 
-const STATUS_COLORS = { da_fare: '#2563eb', in_corso: '#d97706', fatto: '#15803d', problema: '#dc2626' };
+const STATUS_COLORS = { da_fare: '#2563eb', in_corso: '#b45309', fatto: '#15803d', problema: '#dc2626' };
 // Oltre questo numero di cabine nello schermo i segnaposto diventano pallini.
 const MAX_PINS = LOW_END ? 150 : 300;
 // Segnaposto pronti anche appena fuori dallo schermo, per i piccoli spostamenti; quelli già
@@ -643,7 +703,7 @@ function inBounds(b, c) {
 }
 
 function onMarkerTap(id) {
-  if (nav.cabId) return;
+  if (nav.cabId || state.pick) return;
   setFollow(false);
   openDetail(id);
 }
@@ -669,6 +729,9 @@ function renderMarkers() {
     if (show) wanted.set(c.id, [c, false]);
   }
   for (const c of state.pending) wanted.set(c.clientId, [c, true]);
+  // La cabina con la scheda aperta resta sulla mappa anche se una ricerca o un filtro la escludono.
+  const sel = state.selectedId && getCabinet(state.selectedId);
+  if (sel && sel.id && !wanted.has(sel.id)) wanted.set(sel.id, [sel, false]);
 
   for (const [id, m] of markers) {
     if (!wanted.has(id)) {
@@ -685,6 +748,7 @@ function renderMarkers() {
       m.key = key;
       m.marker.options.title = cabinetTitle(cab);
       m.marker.setLatLng([cab.lat, cab.lng]).setIcon(markerIcon(cab, pending, id)).setZIndexOffset(zIndexOffset);
+      m.marker.getElement()?.setAttribute('title', cabinetTitle(cab)); // Leaflet non aggiorna il titolo da solo
       continue;
     }
     const marker = L.marker([cab.lat, cab.lng], { icon: markerIcon(cab, pending, id), title: cabinetTitle(cab), zIndexOffset });
@@ -810,10 +874,17 @@ function updateMyPosition(pos) {
     if (moving) cone.style.transform = `rotate(${c.heading}deg)`;
   }
   $('#btn-locate').classList.add('has-fix');
-  // L'elenco è ordinato per distanza: lo aggiorniamo solo dopo spostamenti significativi.
+  // L'elenco è ordinato per distanza: lo aggiorniamo solo dopo spostamenti significativi. Se è
+  // aperto si aggiornano solo le distanze, senza riordinare le righe sotto il dito; il nuovo
+  // ordine arriva alla prossima apertura.
   if (!state.listPos || distance(state.listPos, state.position) > 25) {
     state.listPos = { lat: c.latitude, lng: c.longitude };
-    renderList();
+    if (listVisible() && $('#list').children.length) {
+      updateListDistances();
+      listDirty = true;
+    } else {
+      renderList();
+    }
   }
 }
 
@@ -824,10 +895,16 @@ function getPosition() {
       return;
     }
     navigator.geolocation.getCurrentPosition(
-      (pos) => { updateMyPosition(pos); resolve(state.position); },
+      (pos) => {
+        updateMyPosition(pos);
+        // Permesso concesso dopo un rifiuto iniziale: da qui il GPS torna a seguire la posizione.
+        startWatch();
+        resolve(state.position);
+      },
       (err) => {
         const msg = {
-          1: 'Permesso di posizione negato: abilitalo nelle impostazioni del browser',
+          1: NATIVE ? 'Permesso di posizione negato: abilitalo nelle impostazioni dell\'app (Autorizzazioni › Posizione)'
+            : 'Permesso di posizione negato: abilitalo nelle impostazioni del browser',
           2: 'Posizione non disponibile, riprova all\'aperto',
           3: 'Tempo scaduto per il GPS, riprova',
         }[err.code] || 'Impossibile ottenere la posizione';
@@ -882,11 +959,11 @@ function nextPosition(ms) {
   });
 }
 
-async function accuratePosition() {
+async function accuratePosition(alive = () => true) {
   let best = await freshPosition();
   const deadline = Date.now() + 8000;
-  while (best.accuracy > GOOD_ACCURACY_M && watchId !== null && Date.now() < deadline) {
-    toast(`Miglioro la precisione del GPS… ±${Math.round(best.accuracy)} m`, false, 9000);
+  while (best.accuracy > GOOD_ACCURACY_M && watchId !== null && Date.now() < deadline && alive()) {
+    toastAction(`Miglioro la precisione del GPS… ±${Math.round(best.accuracy)} m`, 'Annulla', cancelGpsAdd, 9000);
     const next = await nextPosition(deadline - Date.now());
     if (!next) break;
     if (next.accuracy < best.accuracy) best = next;
@@ -950,15 +1027,18 @@ function renderFilterPill() {
   const listOpen = !isDesktop() && $('#list-panel').classList.contains('open');
   $('#filter-pill').hidden = !parts.length || listOpen;
   $('#filter-pill-text').textContent = `Filtro: ${parts.join(' · ')}`;
-  $('#filter-pill').setAttribute('aria-label', `Togli il filtro ${parts.join(', ')}`);
+  $('#filter-pill').setAttribute('aria-label', `${parts.length > 1 ? 'Togli i filtri' : 'Togli il filtro'} ${parts.join(', ')}`);
 }
+
+// Ricerca senza badare ad accenti e apostrofi: "liberta" trova "Libertà", "forli" trova "Forlì".
+const fold = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[’‘]/g, "'").toLowerCase();
 
 // Testo in cui cercare, preparato una volta sola per cabina (una cabina modificata è un oggetto nuovo).
 const searchTexts = new WeakMap();
 function searchText(c) {
   let hay = searchTexts.get(c);
   if (hay === undefined) {
-    hay = [c.code, c.address, c.notes, c.createdBy, TYPE_LABELS[c.type], ...c.log.map((l) => l.text)].join(' ').toLowerCase();
+    hay = fold([c.code, c.address, c.notes, c.createdBy, TYPE_LABELS[c.type], ...c.log.map((l) => l.text)].join(' '));
     searchTexts.set(c, hay);
   }
   return hay;
@@ -967,7 +1047,7 @@ function searchText(c) {
 // Lo stesso risultato serve a mappa, elenco e suggerimenti: si ricalcola solo se cambia qualcosa.
 let filterMemo = null;
 function filteredCabinets() {
-  const q = $('#search').value.trim().toLowerCase();
+  const q = fold($('#search').value.trim());
   const type = $('#filter-type').value;
   const status = state.filterStatus;
   const m = filterMemo;
@@ -1030,7 +1110,7 @@ function renderList() {
   const dist = sortByDistance(list);
   const pos = state.position;
   const total = state.cabinets.length;
-  $('#list-count').textContent = (list.length === total ? `${total} cabine` : `${list.length} di ${total}`) +
+  $('#list-count').textContent = (list.length === total ? (total === 1 ? '1 cabina' : `${total} cabine`) : `${list.length} di ${total}`) +
     (pos ? ' · le più vicine prima' : ' · le più recenti prima');
 
   const pendingItems = state.pending.map((c) => `
@@ -1061,11 +1141,25 @@ function renderList() {
     empty.hidden = true;
   } else {
     empty.hidden = false;
+    // Prima del primo scaricamento non si dice "nessuna cabina": la squadra potrebbe averne.
+    const loading = !state.lastSync && !LOCAL;
     empty.innerHTML = total
-      ? `Nessuna cabina corrisponde alla ricerca.${q ? `<br><button class="btn" id="btn-place-search" type="button">${icon('search')} Cerca “${esc(q)}” sulla mappa</button>` : ''}`
-      : 'Ancora nessuna cabina salvata.<br>Premi <strong>+</strong> per aggiungere la prima.';
+      ? (q ? `Nessuna cabina corrisponde alla ricerca.<br><button class="btn" id="btn-place-search" type="button">${icon('search')} Cerca “${esc(q)}” sulla mappa</button>`
+        : 'Nessuna cabina con questi filtri.')
+      : loading ? (state.offline ? 'Sei offline: le cabine della squadra non sono ancora state scaricate.' : 'Caricamento delle cabine…')
+        : 'Ancora nessuna cabina salvata.<br>Premi <strong>+</strong> per aggiungere la prima.';
     $('#btn-place-search')?.addEventListener('click', () => searchPlace(q));
   }
+}
+
+function updateListDistances() {
+  const pos = state.position;
+  if (!pos) return;
+  document.querySelectorAll('#list .item[data-id]').forEach((item) => {
+    const cab = getCabinet(item.dataset.id);
+    const el = item.querySelector('.item-dist');
+    if (cab && el) el.textContent = fmtDistance(distance(pos, cab));
+  });
 }
 
 function appendListPage() {
@@ -1092,8 +1186,9 @@ function focusCabinet(id) {
   if (!isDesktop()) toggleList(false);
   setFollow(false);
   state.userMovedMap = true;
-  map.setView([cab.lat, cab.lng], Math.max(map.getZoom(), 17));
-  openDetail(id);
+  // Prima la scheda, poi un solo spostamento della mappa che tiene conto di dove sta la scheda.
+  openDetail(id, { reveal: false });
+  showCabinetAt(cab, Math.max(map.getZoom(), 17), true);
 }
 
 function toggleList(force) {
@@ -1111,6 +1206,7 @@ function toggleList(force) {
     if (open) closeDetail();
   }
   if (open && listDirty) renderList();
+  if (!open && !isDesktop()) listDirty = true; // riaprendolo, di nuovo in ordine di distanza
   $('#btn-list').setAttribute('aria-expanded', String(open));
 }
 $('#btn-list').addEventListener('click', () => toggleList());
@@ -1118,6 +1214,7 @@ $('#btn-list').addEventListener('click', () => toggleList());
 window.matchMedia('(min-width: 900px)').addEventListener('change', () => {
   if (listDirty) renderList();
   renderFilterPill();
+  if (!state.pick && !nav.cabId && !$('#sheet').hidden) $('#fabs').hidden = !isDesktop();
 });
 
 // Barra di ricerca con suggerimenti: cabine corrispondenti e ricerca di un indirizzo.
@@ -1134,6 +1231,7 @@ function clearSearch() {
 
 function renderSuggestions() {
   const box = $('#suggestions');
+  suggestionIndex = -1;
   const q = searchInput.value.trim();
   if (!q || document.activeElement !== searchInput) {
     box.hidden = true;
@@ -1163,14 +1261,27 @@ searchInput.addEventListener('input', () => {
 });
 searchInput.addEventListener('focus', renderSuggestions);
 searchInput.addEventListener('blur', () => setTimeout(() => { $('#suggestions').hidden = true; }, 150));
+// Frecce su e giù tra i suggerimenti, Invio sceglie quello evidenziato (o il primo), Esc chiude
+// solo i suggerimenti (non la scheda aperta) senza svuotare la ricerca.
+let suggestionIndex = -1;
 searchInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') {
+  const items = [...document.querySelectorAll('#suggestions .suggestion')];
+  if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !$('#suggestions').hidden && items.length) {
     e.preventDefault();
-    if (!$('#suggestions').hidden) $('#suggestions .suggestion')?.click();
+    suggestionIndex = (suggestionIndex + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+    items.forEach((b, i) => b.classList.toggle('active', i === suggestionIndex));
+    items[suggestionIndex].scrollIntoView({ block: 'nearest' });
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    if (!$('#suggestions').hidden) (items[suggestionIndex] || items[0])?.click();
   } else if (e.key === 'Escape') {
+    e.preventDefault();
+    e.stopPropagation();
     searchInput.blur();
   }
 });
+// La X dentro il campo (o un Esc del sistema) svuota il campo: si tolgono anche i filtri della ricerca.
+searchInput.addEventListener('search', () => { if (!searchInput.value) clearSearch(); });
 $('#search-clear').addEventListener('click', () => {
   clearSearch();
   searchInput.focus();
@@ -1188,17 +1299,29 @@ $('#suggestions').addEventListener('click', (e) => {
 });
 
 let placeMarker;
+let placeSeq = 0;
 async function searchPlace(q) {
+  // Con poco segnale: un avviso mentre si cerca, un tempo massimo, e una risposta arrivata
+  // dopo che si è passati ad altro (una cabina aperta, un'altra ricerca) viene ignorata.
+  const seq = ++placeSeq;
+  toast(`Cerco “${q}”…`, false, 15000);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 15000);
   try {
     const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=it&accept-language=it&q=${encodeURIComponent(q)}`;
-    const results = await (await fetch(url)).json();
+    const results = await (await fetch(url, { signal: ctrl.signal })).json();
+    if (seq !== placeSeq) return;
+    hideToast();
     if (!results.length) {
       toast('Luogo non trovato');
       return;
     }
     const lat = Number(results[0].lat);
     const lng = Number(results[0].lon);
-    if (!isDesktop()) toggleList(false);
+    if (!isDesktop()) {
+      toggleList(false);
+      closeDetail(); // altrimenti il punto trovato finirebbe sotto la scheda
+    }
     setFollow(false);
     state.userMovedMap = true;
     placeMarker?.remove();
@@ -1218,7 +1341,9 @@ async function searchPlace(q) {
     // Il segnaposto dell'indirizzo sparisce insieme al suo fumetto (tocco sulla mappa).
     marker.on('popupclose', () => marker.remove());
   } catch {
-    toast('Ricerca indirizzi non disponibile', true);
+    if (seq === placeSeq) toast('Ricerca indirizzi non disponibile', true);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -1240,28 +1365,52 @@ function renderAll() {
 // Scheda dettaglio
 // ---------------------------------------------------------------------------
 
-function openDetail(id) {
+function openDetail(id, { reveal = true } = {}) {
   state.selectedId = id;
+  placeSeq += 1; // una ricerca d'indirizzo ancora in corso non sposta più la mappa
   renderMarkers();
   renderDetail();
   $('#sheet').scrollTop = 0;
-  revealSelected();
+  if (reveal) revealSelected();
 }
 
-// Come su Google Maps: su telefono la cabina scelta resta visibile tra la barra di
-// ricerca e la scheda, invece di finire nascosta sotto di essa.
+// Parte della mappa non coperta da barra di ricerca e scheda (in basso su telefono, a sinistra
+// su schermi larghi): lì deve stare la cabina scelta, come su Google Maps.
+function visibleArea() {
+  const box = map.getContainer().getBoundingClientRect();
+  const area = { top: 0, bottom: box.height, left: 0, right: box.width };
+  const over = (r) => r.width && r.right > box.left + 1 && r.left < box.right - 1 && r.bottom > box.top + 1;
+  const top = $('#top').getBoundingClientRect();
+  if (!$('#top').hidden && over(top)) area.top = Math.max(top.bottom - box.top, 0) + 12;
+  const sheet = $('#sheet');
+  if (!sheet.hidden) {
+    const r = sheet.getBoundingClientRect();
+    if (isDesktop()) area.left = Math.max(r.right - box.left, 0) + 12;
+    else area.bottom = r.top - box.top - 12;
+  }
+  return area;
+}
+
+// Porta la cabina al centro della parte libera, con lo zoom dato, in un solo movimento.
+function showCabinetAt(cab, zoom, animate) {
+  const a = visibleArea();
+  if (a.bottom - a.top < 90 || a.right - a.left < 90) {
+    map.setView([cab.lat, cab.lng], zoom, { animate });
+    return;
+  }
+  const size = map.getSize();
+  // +20: il segnaposto è disegnato sopra il punto esatto.
+  const offset = L.point((a.left + a.right) / 2 - size.x / 2, (a.top + a.bottom) / 2 + 20 - size.y / 2);
+  map.setView(map.unproject(map.project([cab.lat, cab.lng], zoom).subtract(offset), zoom), zoom, { animate });
+}
+
 function revealSelected() {
   const cab = getCabinet(state.selectedId);
-  const sheet = $('#sheet');
-  if (!cab || isDesktop() || sheet.hidden) return;
-  const box = map.getContainer().getBoundingClientRect();
-  const top = Math.max($('#top').getBoundingClientRect().bottom - box.top, 0) + 12;
-  const bottom = sheet.getBoundingClientRect().top - box.top - 12;
-  if (bottom - top < 90) return;
+  if (!cab || $('#sheet').hidden) return;
+  const a = visibleArea();
   const p = map.latLngToContainerPoint([cab.lat, cab.lng]);
-  const pinTop = p.y - 46; // il segnaposto sta sopra il punto esatto
-  if (pinTop >= top && p.y <= bottom) return;
-  map.panBy([0, p.y - (top + bottom) / 2 - 20], { animate: true, duration: 0.3 });
+  if (p.y - 46 >= a.top && p.y <= a.bottom && p.x - 17 >= a.left && p.x + 17 <= a.right) return;
+  showCabinetAt(cab, map.getZoom(), true);
 }
 
 function closeDetail() {
@@ -1272,14 +1421,28 @@ function closeDetail() {
   renderMarkers();
 }
 
+// Nota del diario che si sta scrivendo, per cabina: non passa a un'altra cabina aperta dopo.
+const logDrafts = new Map();
+const logIds = new Map(); // identificativo della nota in invio: riprovare non la duplica
+let logSending = false;
+
 function renderDetail() {
   const sheet = $('#sheet');
   const cab = getCabinet(state.selectedId);
   if (!cab) return;
   const pending = !cab.id;
-  // Conserva il testo che si sta scrivendo nel diario durante gli aggiornamenti automatici.
-  const draft = $('#log-text', sheet)?.value || '';
-  const hadFocus = document.activeElement?.id === 'log-text';
+  const key = cab.id || cab.clientId;
+  // Aggiornamento automatico senza cambiamenti per questa cabina: la scheda resta com'è
+  // (chi sta scrivendo nel diario non perde il punto in cui era).
+  const json = JSON.stringify(cab) + (state.position ? '' : '-');
+  if (!sheet.hidden && sheet.dataset.cabId === key && sheet.renderedJson === json) return;
+  const prevText = $('#log-text', sheet);
+  let caret = null;
+  if (prevText && sheet.dataset.cabId) {
+    logDrafts.set(sheet.dataset.cabId, prevText.value);
+    if (document.activeElement === prevText) caret = [prevText.selectionStart, prevText.selectionEnd];
+  }
+  const hadFocus = caret !== null && sheet.dataset.cabId === key;
   const dest = `${cab.lat},${cab.lng}`;
   const distanceText = state.position ? ` · a ${fmtDistance(distance(state.position, cab))} da te` : '';
 
@@ -1346,7 +1509,9 @@ function renderDetail() {
     <div class="row"><button class="btn btn-danger-text" id="btn-delete" type="button">${icon('trash')} Elimina cabina</button></div>`}
   `;
   sheet.hidden = false;
-  if (!isDesktop()) $('#fabs').hidden = true;
+  sheet.dataset.cabId = key;
+  sheet.renderedJson = json;
+  $('#fabs').hidden = !isDesktop();
 
   $('#sheet-close').addEventListener('click', closeDetail);
   $('#btn-directions').addEventListener('click', () => openRoute(state.selectedId));
@@ -1354,8 +1519,15 @@ function renderDetail() {
   if (pending) return;
 
   const logText = $('#log-text');
-  logText.value = draft;
-  if (hadFocus) logText.focus();
+  logText.value = logDrafts.get(key) || '';
+  logText.addEventListener('input', () => {
+    logDrafts.set(key, logText.value);
+    logIds.delete(key);
+  });
+  if (hadFocus) {
+    logText.focus();
+    logText.setSelectionRange(caret[0], caret[1]);
+  }
   $('#btn-edit').addEventListener('click', () => openForm({ mode: 'edit', cab }));
   $('#btn-move').addEventListener('click', () => moveCabinet(cab));
   $('#btn-delete').addEventListener('click', () => deleteCabinet(cab));
@@ -1378,13 +1550,23 @@ async function copyText(text) {
 
 async function addLog(cab) {
   const text = $('#log-text').value.trim();
-  if (!text) return;
+  if (!text || logSending) return;
+  // Un tocco solo: fino alla risposta il pulsante resta spento.
+  logSending = true;
+  const btn = $('#log-form [type=submit]');
+  btn.disabled = true;
+  if (!logIds.has(cab.id)) logIds.set(cab.id, newClientId());
   try {
-    const { data } = await api(`/api/cabinets/${cab.id}/log`, { method: 'POST', body: { text } });
-    $('#log-text').value = '';
+    const { data } = await api(`/api/cabinets/${cab.id}/log`, { method: 'POST', body: { text, clientId: logIds.get(cab.id) } });
+    logDrafts.delete(cab.id);
+    logIds.delete(cab.id);
+    if ($('#sheet').dataset.cabId === cab.id && $('#log-text')) $('#log-text').value = '';
     upsertCabinet(data);
   } catch (err) {
-    toast(isNetworkError(err) ? 'Sei offline: la nota non è stata salvata' : err.message, true);
+    toast(isNetworkError(err) ? 'Sei offline: la nota non è stata salvata, riprova' : err.message, true);
+  } finally {
+    logSending = false;
+    if (btn.isConnected) btn.disabled = false;
   }
 }
 
@@ -1398,7 +1580,7 @@ async function deleteLog(cab, logId) {
 }
 
 async function deleteCabinet(cab) {
-  if (!confirm(`Eliminare definitivamente "${cabinetTitle(cab)}" per tutta la squadra?`)) return;
+  if (!confirm(`Eliminare definitivamente "${cabinetTitle(cab)}"${LOCAL ? '' : ' per tutta la squadra'}?`)) return;
   try {
     await api(`/api/cabinets/${cab.id}`, { method: 'DELETE' });
     state.localChanges += 1;
@@ -1422,10 +1604,10 @@ $('#photo-input').addEventListener('change', async (e) => {
   e.target.value = '';
   const cab = getCabinet(state.selectedId);
   if (!file || !cab?.id) return;
-  toast('Caricamento foto…', false, 60000);
+  toast('Caricamento foto…', false, 130000);
   try {
     const blob = await resizeImage(file, 1600, 0.82);
-    upsertCabinet((await api(`/api/cabinets/${cab.id}/photos`, { method: 'POST', body: blob })).data);
+    upsertCabinet((await api(`/api/cabinets/${cab.id}/photos`, { method: 'POST', body: blob, timeout: 120000 })).data);
     toast('Foto aggiunta');
   } catch (err) {
     toast(isNetworkError(err) ? 'Caricamento non riuscito, controlla la connessione' : err.message, true);
@@ -1449,20 +1631,27 @@ function loadLocalPhotos(root) {
   });
 }
 
-// Visore a schermo intero, con scorrimento tra le foto della cabina.
-const viewer = { cab: null, index: 0 };
+// Visore a schermo intero, con scorrimento tra le foto della cabina. Le foto si rileggono dalla
+// cabina aggiornata (un collega può averne tolta una), e il resto della pagina non risponde.
+const viewer = { cabId: null, index: 0, opener: null };
+const viewerCab = () => (viewer.cabId ? getCabinet(viewer.cabId) : null);
 
 async function openViewer(cab, photoId) {
-  viewer.cab = cab;
+  viewer.cabId = cab.id;
+  viewer.opener = document.activeElement;
   viewer.index = Math.max(0, cab.photos.findIndex((p) => p.id === photoId));
   $('#viewer').hidden = false;
+  document.querySelectorAll('#app > :not(#viewer):not(#toast)').forEach((el) => { el.inert = true; });
+  $('#viewer-close').focus();
   await showViewerPhoto();
 }
 
 async function showViewerPhoto() {
-  const { cab, index } = viewer;
-  const p = cab?.photos[index];
-  if (!p) return closeViewer();
+  const cab = viewerCab();
+  if (!cab || !cab.photos.length) return closeViewer();
+  viewer.index = Math.min(viewer.index, cab.photos.length - 1);
+  const { index } = viewer;
+  const p = cab.photos[index];
   const img = $('#viewer-img');
   img.removeAttribute('src');
   img.src = LOCAL ? (await LocalApi.photoUrl(cab.id, p.id)) || '' : photoUrl(cab.id, p.id);
@@ -1472,7 +1661,8 @@ async function showViewerPhoto() {
 }
 
 function stepViewer(delta) {
-  const n = viewer.cab.photos.length;
+  const n = viewerCab()?.photos.length;
+  if (!n) return closeViewer();
   viewer.index = (viewer.index + delta + n) % n;
   showViewerPhoto();
 }
@@ -1480,7 +1670,10 @@ function stepViewer(delta) {
 function closeViewer() {
   $('#viewer').hidden = true;
   $('#viewer-img').removeAttribute('src');
-  viewer.cab = null;
+  viewer.cabId = null;
+  document.querySelectorAll('#app > [inert]').forEach((el) => { el.inert = false; });
+  if (viewer.opener?.isConnected) viewer.opener.focus();
+  viewer.opener = null;
 }
 
 $('#viewer-close').addEventListener('click', closeViewer);
@@ -1491,7 +1684,7 @@ $('#viewer').addEventListener('click', (e) => { if (e.target.id === 'viewer') cl
 let swipeX = null;
 $('#viewer').addEventListener('touchstart', (e) => { swipeX = e.touches[0].clientX; }, { passive: true });
 $('#viewer').addEventListener('touchend', (e) => {
-  if (swipeX === null || !viewer.cab || viewer.cab.photos.length < 2) return;
+  if (swipeX === null || !viewerCab() || viewerCab().photos.length < 2) return;
   const dx = e.changedTouches[0].clientX - swipeX;
   swipeX = null;
   if (Math.abs(dx) > 50) stepViewer(dx < 0 ? 1 : -1);
@@ -1530,18 +1723,27 @@ async function deletePhoto(cab, photoId) {
 
 $('#btn-add').addEventListener('click', () => $('#add-dialog').showModal());
 
+// "Sono qui adesso" si può annullare; e se nel frattempo si è iniziato altro (mirino, modulo,
+// percorso) la posizione arrivata in ritardo non lo sovrascrive.
+let gpsAddToken = 0;
+const cancelGpsAdd = () => { gpsAddToken += 1; };
+
 $('#add-dialog').addEventListener('close', async () => {
   const choice = $('#add-dialog').returnValue;
   $('#add-dialog').returnValue = '';
   if (choice === 'gps') {
-    toast('Rilevamento posizione GPS…', false, 20000);
+    const token = ++gpsAddToken;
+    const alive = () => token === gpsAddToken;
+    toastAction('Rilevamento posizione GPS…', 'Annulla', cancelGpsAdd, 30000);
     try {
-      const pos = await accuratePosition();
-      $('#toast').hidden = true;
+      const pos = await accuratePosition(alive);
+      if (!alive()) return;
+      hideToast();
+      if ($('#form-dialog').open || state.pick || nav.cabId) return;
       map.setView([pos.lat, pos.lng], Math.max(map.getZoom(), 18));
       openForm({ mode: 'create', lat: pos.lat, lng: pos.lng, accuracy: Math.round(pos.accuracy) });
     } catch (err) {
-      toast(err.message, true, 6000);
+      if (alive()) toast(err.message, true, 6000);
     }
   } else if (choice === 'map') {
     closeDetail();
@@ -1552,6 +1754,7 @@ $('#add-dialog').addEventListener('close', async () => {
 });
 
 function pickLocation(text) {
+  cancelGpsAdd();
   return new Promise((resolve) => {
     setFollow(false);
     state.pick = resolve;
@@ -1586,7 +1789,7 @@ async function moveCabinet(cab) {
   try {
     const { data } = await api(`/api/cabinets/${cab.id}`, {
       method: 'PUT',
-      body: { lat: ll.lat, lng: ll.lng, accuracy: null, baseUpdatedAt: cab.updatedAt },
+      body: { lat: ll.lat, lng: ll.lng, accuracy: null, baseUpdatedAt: cab.editedAt || cab.updatedAt },
     });
     upsertCabinet(data);
     toast('Posizione aggiornata');
@@ -1598,6 +1801,9 @@ async function moveCabinet(cab) {
 function openForm(opts) {
   const form = $('#cabinet-form');
   const dialog = $('#form-dialog');
+  cancelGpsAdd();
+  geocodeSeq += 1; // una ricerca d'indirizzo ancora in corso apparteneva al modulo di prima
+  $('#btn-geocode').disabled = false;
   state.form = opts;
   form.reset();
   $('#form-error').textContent = '';
@@ -1625,6 +1831,7 @@ function openForm(opts) {
 }
 
 $('#form-cancel').addEventListener('click', () => $('#form-dialog').close());
+$('#form-dialog').addEventListener('close', () => { geocodeSeq += 1; });
 
 $('#btn-geocode').addEventListener('click', () => {
   const f = state.form;
@@ -1635,12 +1842,13 @@ let geocodeSeq = 0;
 async function reverseGeocode(lat, lng, onlyIfEmpty) {
   const input = $('#cabinet-form').address;
   const seq = ++geocodeSeq;
+  const target = state.form;
   const btn = $('#btn-geocode');
   btn.disabled = true;
   try {
     const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&accept-language=it&lat=${lat}&lon=${lng}`;
     const data = await (await fetch(url)).json();
-    if (seq !== geocodeSeq || (onlyIfEmpty && input.value.trim())) return;
+    if (seq !== geocodeSeq || state.form !== target || !$('#form-dialog').open || (onlyIfEmpty && input.value.trim())) return;
     const a = data.address || {};
     const street = a.road || a.pedestrian || a.footway || a.path || a.square || '';
     const city = a.city || a.town || a.village || a.hamlet || a.municipality || '';
@@ -1674,7 +1882,7 @@ $('#cabinet-form').addEventListener('submit', async (e) => {
     if (opts.mode === 'edit') {
       const { data } = await api(`/api/cabinets/${opts.cab.id}`, {
         method: 'PUT',
-        body: { ...fields, baseUpdatedAt: opts.cab.updatedAt },
+        body: { ...fields, baseUpdatedAt: opts.cab.editedAt || opts.cab.updatedAt },
       });
       upsertCabinet(data);
       $('#form-dialog').close();
@@ -1686,21 +1894,36 @@ $('#cabinet-form').addEventListener('submit', async (e) => {
         upsertCabinet(data);
         $('#form-dialog').close();
         openDetail(data.id);
-        toast('Cabina salvata per tutta la squadra');
+        toast(LOCAL ? 'Cabina salvata' : 'Cabina salvata per tutta la squadra');
       } catch (err) {
-        if (!isNetworkError(err)) throw err;
+        // Senza rete, con il server fermo o con l'accesso scaduto la cabina resta sul telefono
+        // e parte da sola appena possibile (il server riconosce i doppioni).
+        const later = isNetworkError(err) || err.status === 401 || err.status === 408 || err.status === 429 || err.status >= 500;
+        if (!later) throw err;
         state.pending.push(item);
-        saveJson('cabine.pending', state.pending);
-        $('#form-dialog').close();
+        if (!savePending()) {
+          state.pending.pop();
+          $('#form-error').textContent = 'Memoria del telefono piena: la cabina non è stata salvata';
+          return;
+        }
+        if ($('#form-dialog').open) $('#form-dialog').close();
         renderAll();
-        openDetail(item.clientId);
-        toast('Sei offline: cabina salvata sul telefono, verrà inviata appena torna la connessione', false, 6000);
+        if (err.status === 401) {
+          toast('Accesso scaduto: la cabina è salvata sul telefono e verrà inviata dopo l\'accesso', false, 8000);
+        } else {
+          openDetail(item.clientId);
+          toast(isNetworkError(err) ? 'Sei offline: cabina salvata sul telefono, verrà inviata appena torna la connessione'
+            : 'Server non raggiungibile: cabina salvata sul telefono, verrà inviata appena possibile', false, 6000);
+        }
       }
     }
   } catch (err) {
-    if (err.status === 409) {
-      $('#form-dialog').close();
-      handleSaveError(err);
+    if (err.status === 409 && err.data?.cabinet) {
+      // Conflitto: il modulo resta aperto con quello che si è scritto; premendo di nuovo Salva
+      // si salva sopra la versione appena arrivata.
+      state.form.cab = err.data.cabinet;
+      upsertCabinet(err.data.cabinet);
+      $('#form-error').textContent = err.message;
     } else {
       $('#form-error').textContent = isNetworkError(err) ? 'Sei offline: le modifiche non sono state salvate' : err.message;
     }
@@ -1769,6 +1992,10 @@ async function openRoute(id) {
       renderRoute();
       return;
     }
+  } else if (Date.now() - state.positionAt > 60000) {
+    // Posizione vecchia (telefono in tasca): si aspetta qualche secondo una lettura nuova.
+    startWatch();
+    from = await Promise.race([freshPosition().catch(() => from), new Promise((r) => setTimeout(() => r(from), 4000))]);
   }
   if (nav.cabId !== id) return;
   await computeRoutes(from, ['car', 'foot']);
@@ -1776,11 +2003,12 @@ async function openRoute(id) {
 }
 
 async function computeRoutes(from, modes) {
-  nav.abort?.abort();
-  const ctrl = new AbortController();
-  nav.abort = ctrl;
   const cab = getCabinet(nav.cabId);
+  // Una richiesta per modo: ricalcolare in auto non annulla il percorso a piedi in arrivo.
   await Promise.all(modes.map(async (mode) => {
+    nav.aborts[mode]?.abort();
+    const ctrl = new AbortController();
+    nav.aborts[mode] = ctrl;
     try {
       nav.routes[mode] = await Routing.fetchRoute(mode, from, cab, ctrl.signal);
       delete nav.errors[mode];
@@ -1900,7 +2128,8 @@ $('#route-back').addEventListener('click', () => closeRoute());
 
 function closeRoute() {
   stopNav();
-  nav.abort?.abort();
+  Object.values(nav.aborts).forEach((c) => c.abort());
+  nav.aborts = {};
   const id = nav.cabId;
   nav.cabId = null;
   nav.routes = {};
@@ -1916,6 +2145,7 @@ function closeRoute() {
 
 function startNav() {
   if (!nav.routes[nav.mode]) return;
+  startWatch();
   nav.active = true;
   nav.lastReroute = Date.now();
   document.body.classList.add('navigating');
@@ -1946,10 +2176,18 @@ function onNavPosition() {
   const pos = state.position;
   const p = Routing.progress(r, pos);
   const toCab = distance(pos, cab);
-  // Arrivati: vicini alla cabina, oppure a fine percorso quando il GPS è poco preciso.
-  if (toCab <= ARRIVE_M || (p.remaining < 20 && toCab <= Math.min(Math.max(ARRIVE_M, pos.accuracy || 0), 60))) {
+  // Arrivati: vicini alla cabina (in auto anche vicini alla fine del percorso: passare accanto
+  // alla cabina su un'altra carreggiata non conta), oppure a fine percorso col GPS poco preciso.
+  const near = toCab <= ARRIVE_M && (nav.mode !== 'car' || p.remaining < 150);
+  if (near || (p.remaining < 20 && toCab <= Math.min(Math.max(ARRIVE_M, pos.accuracy || 0), 60))) {
     toast(`Sei arrivato: ${cabinetTitle(cab)}`, false, 5000);
     closeRoute();
+    return;
+  }
+  // Fine della strada ma cabina ancora lontana (in un campo, in un cortile): niente ricalcoli,
+  // si indica la distanza in linea d'aria.
+  if (p.remaining < 30) {
+    renderNav(p, toCab);
     return;
   }
   // Fuori strada: ricalcola il percorso dalla posizione attuale (al massimo ogni 10 secondi).
@@ -1967,14 +2205,17 @@ function onNavPosition() {
   renderNav(p);
 }
 
-function renderNav(p) {
+function renderNav(p, offRoadDistance) {
   const r = nav.routes[nav.mode];
   if (!r) return;
   if (!p) p = state.position ? Routing.progress(r, state.position) : Routing.progress(r, r.coords[0]);
-  const next = p.next || { icon: 'flag', text: `Prosegui verso ${cabinetTitle(getCabinet(nav.cabId) || {})}` };
+  const title = cabinetTitle(getCabinet(nav.cabId) || {});
+  const next = p.next || { icon: 'flag', text: `Prosegui verso ${title}` };
   $('#nav-banner').innerHTML = nav.rerouting
     ? '<span class="spinner"></span><div class="nav-text">Ricalcolo del percorso…</div>'
-    : `${maneuverSvg(next.icon)}<div><div class="nav-dist">${fmtDistance(p.toNext)}</div><div class="nav-text">${esc(next.text)}</div></div>`;
+    : offRoadDistance !== undefined
+      ? `${maneuverSvg('flag')}<div><div class="nav-dist">${fmtDistance(offRoadDistance)}</div><div class="nav-text">${esc(`Raggiungi a piedi ${title}: è fuori strada`)}</div></div>`
+      : `${maneuverSvg(next.icon)}<div><div class="nav-dist">${fmtDistance(p.toNext)}</div><div class="nav-text">${esc(next.text)}</div></div>`;
   $('#nav-bottom').innerHTML = `
     <div>
       <span class="route-time">${Routing.fmtDuration(p.remainingTime)}</span>
@@ -2025,7 +2266,15 @@ $('#menu-dialog').addEventListener('close', async () => {
   if (choice === 'settings') {
     NATIVE?.openSettings();
   } else if (choice === 'logout') {
-    try { await api('/api/logout', { method: 'POST' }); } catch { /* offline */ }
+    if (state.pending.length && !confirm(`${state.pending.length === 1 ? 'Una cabina non è ancora stata inviata' : `${state.pending.length} cabine non sono ancora state inviate`}: `
+      + 'resta sul telefono e verrà inviata al prossimo accesso. Uscire lo stesso?')) return;
+    // Si esce subito; la sessione sul server si chiude appena c'è campo (anche al prossimo avvio).
+    if (!LOCAL) {
+      store('cabine.logoutPending', '1');
+      api('/api/logout', { method: 'POST', timeout: 8000 }).then(() => store('cabine.logoutPending', null), () => {});
+    } else {
+      try { await api('/api/logout', { method: 'POST' }); } catch { /* telefono */ }
+    }
     clearTimeout(cacheTimer);
     cacheTimer = null;
     store('cabine.cache', null);
@@ -2059,8 +2308,16 @@ function download(name, content, type) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+// Data del telefono (non quella UTC: dopo mezzanotte il file avrebbe la data del giorno prima).
 function exportName(ext) {
-  return `cabine-${new Date().toISOString().slice(0, 10)}.${ext}`;
+  const d = new Date();
+  const two = (n) => String(n).padStart(2, '0');
+  return `cabine-${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}.${ext}`;
+}
+
+// Nelle esportazioni ci sono anche le cabine salvate offline e non ancora inviate.
+function exportCabinets() {
+  return [...state.cabinets, ...state.pending.map((c) => ({ ...c, photos: [], log: [], createdBy: state.me?.name || '', pending: true }))];
 }
 
 function exportCsv() {
@@ -2071,8 +2328,8 @@ function exportCsv() {
   };
   // Un testo che inizia con = + - @ verrebbe eseguito da Excel come formula.
   const text = (v) => (/^[=+\-@\t\r]/.test(v || '') ? `'${v}` : v);
-  const rows = state.cabinets.map((c) => [
-    text(c.code), TYPE_LABELS[c.type], STATUS_LABELS[c.status], fmtCoord(c.lat), fmtCoord(c.lng), text(c.address), text(c.notes),
+  const rows = exportCabinets().map((c) => [
+    text(c.code), TYPE_LABELS[c.type], STATUS_LABELS[c.status] + (c.pending ? ' (da inviare)' : ''), fmtCoord(c.lat), fmtCoord(c.lng), text(c.address), text(c.notes),
     text(c.createdBy), fmtDate(c.createdAt), text(c.updatedBy), fmtDate(c.updatedAt), `https://www.google.com/maps?q=${c.lat},${c.lng}`,
   ].map(cell).join(';'));
   // BOM e punto e virgola: così Excel in italiano apre il file correttamente.
@@ -2082,7 +2339,7 @@ function exportCsv() {
 function exportGeoJson() {
   const fc = {
     type: 'FeatureCollection',
-    features: state.cabinets.map((c) => {
+    features: exportCabinets().map((c) => {
       const { lat, lng, ...props } = c;
       return { type: 'Feature', geometry: { type: 'Point', coordinates: [lng, lat] }, properties: props };
     }),
@@ -2095,7 +2352,7 @@ function exportKml() {
   const x = (s) => esc(String(s ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, ''));
   // Le colonne in ExtendedData permettono di reimportare il file senza perdere stato e indirizzo.
   const data = (name, value) => `<Data name="${name}"><value>${x(value)}</value></Data>`;
-  const placemarks = state.cabinets.map((c) => `
+  const placemarks = exportCabinets().map((c) => `
   <Placemark>
     <name>${x(cabinetTitle(c))}</name>
     <description>${x([TYPE_LABELS[c.type], STATUS_LABELS[c.status], c.address, c.notes].filter(Boolean).join('\n'))}</description>
@@ -2392,6 +2649,7 @@ $('#import-form').addEventListener('submit', async (e) => {
   let created = 0;
   let existing = 0;
   let sent = 0;
+  const createdIds = []; // solo queste toglierà "Annulla" (non quelle che c'erano già)
   try {
     for (let i = 0; i < list.length; i += IMPORT_BATCH) {
       $('#import-go').textContent = list.length > IMPORT_BATCH
@@ -2400,6 +2658,7 @@ $('#import-form').addEventListener('submit', async (e) => {
       const { data } = await api('/api/cabinets/import', { method: 'POST', body: { cabinets: list.slice(i, i + IMPORT_BATCH) }, timeout: 90000 });
       created += data.created;
       existing += data.existing;
+      createdIds.push(...(data.ids || []));
       sent = i + IMPORT_BATCH;
     }
     setImportBusy(false);
@@ -2408,7 +2667,7 @@ $('#import-form').addEventListener('submit', async (e) => {
     state.etag = null;
     showImported(list);
     const text = `${created === 1 ? 'Importata 1 cabina' : `Importate ${created} cabine`}${existing ? ` (${existing} c'${existing === 1 ? 'era' : 'erano'} già)` : ''}`;
-    if (created) toastAction(text, 'Annulla', () => undoImport(list.map((p) => p.clientId)), 12000);
+    if (created) toastAction(text, 'Annulla', () => undoImport(createdIds), 12000);
     else toast(text, false, 5000);
     await refresh();
   } catch (err) {

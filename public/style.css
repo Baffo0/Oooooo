@@ -16,7 +16,7 @@
   --shadow: 0 2px 10px rgba(15, 30, 40, 0.22);
   --shadow-lg: 0 6px 24px rgba(15, 30, 40, 0.22);
   --st-da_fare: #2563eb;
-  --st-in_corso: #d97706;
+  --st-in_corso: #b45309;
   --st-fatto: #15803d;
   --st-problema: #dc2626;
   --radius: 14px;
@@ -186,7 +186,7 @@ label > input, label > select, label > textarea, label > .input-with-btn { margi
   top: calc(var(--safe-top) + 10px);
   left: 10px;
   right: 10px;
-  z-index: 1100;
+  z-index: 1155; /* sopra la scheda (1150): i suggerimenti della ricerca restano visibili */
   pointer-events: none;
 }
 .top > * { pointer-events: auto; }
@@ -258,13 +258,11 @@ label > input, label > select, label > textarea, label > .input-with-btn { margi
 /* Filtri per stato: nell'elenco, sotto il titolo. */
 .chips {
   display: flex;
+  flex-wrap: wrap; /* tutti i filtri visibili, anche "Problema", senza dover scorrere di lato */
   gap: 8px;
-  overflow-x: auto;
-  scrollbar-width: none;
   padding: 2px 16px 10px;
   flex: none;
 }
-.chips::-webkit-scrollbar { display: none; }
 .chip-btn {
   flex: none;
   display: inline-flex;
@@ -593,7 +591,7 @@ label > input, label > select, label > textarea, label > .input-with-btn { margi
   max-width: 520px;
   margin: 0 auto;
 }
-.pick-bar p { margin: 0; font-weight: 600; }
+.pick-bar p { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
 .pick-bar .row { margin-top: 10px; justify-content: flex-end; }
 
 /* Scheda dettaglio (e pannello percorso) */
@@ -905,6 +903,7 @@ details summary { cursor: pointer; font-weight: 650; padding: 10px 0 2px; color:
   font-size: 0.95rem;
 }
 .toast.error-toast { background: #9b1c1c; }
+.toast { overflow-wrap: anywhere; }
 .toast-action {
   margin-left: 10px;
   padding: 4px 10px;
@@ -926,3 +925,8 @@ details summary { cursor: pointer; font-weight: 650; padding: 10px 0 2px; color:
 .leaflet-control-attribution { font-size: 10px; }
 .leaflet-popup-content { margin: 12px 14px; }
 .leaflet-popup-content .btn { margin-top: 8px; }
+
+/* Telefono in orizzontale: la scheda lascia spazio per vedere la cabina sopra. */
+@media (max-width: 899px) and (max-height: 520px) {
+  .sheet { max-height: 55%; }
+}

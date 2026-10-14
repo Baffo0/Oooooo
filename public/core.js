@@ -93,6 +93,7 @@
       createdAt: ctx.now,
       updatedBy: ctx.user,
       updatedAt: ctx.now,
+      editedAt: ctx.now,
     };
     if (clientId) cab.clientId = clientId;
     db.cabinets.push(cab);
@@ -142,13 +143,14 @@
     return out;
   }
 
-  // "Annulla" subito dopo un'importazione: si tolgono le cabine importate (per clientId) che
-  // nessuno ha ancora toccato, cioè senza foto e mai modificate. Le altre restano.
-  function undoImport(db, body) {
+  // "Annulla" subito dopo un'importazione: si tolgono le cabine importate (per clientId) da chi
+  // annulla e che nessuno ha ancora toccato, cioè senza foto e mai modificate. Le altre restano.
+  function undoImport(db, body, ctx) {
     const ids = body && body.clientIds;
     if (!Array.isArray(ids) || ids.length > MAX_IMPORT) throw new CoreError(400, 'Elenco non valido');
     const wanted = new Set(ids.filter((id) => typeof id === 'string' && id.startsWith('imp-')));
-    const removed = db.cabinets.filter((c) => wanted.has(c.clientId) && !c.photos.length && c.updatedAt === c.createdAt);
+    const removed = db.cabinets.filter((c) => wanted.has(c.clientId) && c.createdBy === ctx.user
+      && !c.photos.length && c.updatedAt === c.createdAt);
     const gone = new Set(removed);
     db.cabinets = db.cabinets.filter((c) => !gone.has(c));
     return removed;
@@ -161,12 +163,19 @@
     db.cabinets = db.cabinets.filter((c) => !gone.has(c));
   }
 
+  // Il controllo dei conflitti guarda solo i dati della scheda (editedAt): una nota nel diario o
+  // una foto aggiunte da un collega nel frattempo non bloccano la modifica. Se chi salva manda
+  // di nuovo gli stessi dati (risposta persa per strada) non è un conflitto.
   function updateCabinet(db, id, body, ctx) {
     const cab = findCabinet(db, id);
-    if (body.baseUpdatedAt && body.baseUpdatedAt !== cab.updatedAt) {
-      throw new CoreError(409, `Nel frattempo ${cab.updatedBy} ha modificato questa cabina. Ricarica e riprova.`, { cabinet: cab });
+    const fields = cabinetFields({ ...cab, ...body });
+    const base = body.baseUpdatedAt;
+    if (base && base !== (cab.editedAt || cab.updatedAt) && base !== cab.updatedAt) {
+      if (Object.keys(fields).every((k) => fields[k] === cab[k])) return cab;
+      const who = cab.updatedBy === ctx.user ? 'un altro tuo salvataggio' : cab.updatedBy;
+      throw new CoreError(409, `Nel frattempo questa cabina è stata modificata da ${who}: controlla i dati e premi di nuovo Salva.`, { cabinet: cab });
     }
-    Object.assign(cab, cabinetFields({ ...cab, ...body }), { updatedBy: ctx.user, updatedAt: ctx.now });
+    Object.assign(cab, fields, { updatedBy: ctx.user, updatedAt: ctx.now, editedAt: ctx.now });
     return cab;
   }
 
@@ -180,7 +189,10 @@
     const cab = findCabinet(db, id);
     const text = cleanText(body.text, 2000);
     if (!text) throw new CoreError(400, 'Scrivi una nota');
-    cab.log.unshift({ id: ctx.newId(), by: ctx.user, at: ctx.now, text });
+    // Stessa nota rimandata (doppio tocco, risposta persa): non si scrive due volte.
+    const clientId = cleanText(body.clientId, 40);
+    if (clientId && cab.log.some((e) => e.clientId === clientId)) return cab;
+    cab.log.unshift({ id: ctx.newId(), by: ctx.user, at: ctx.now, text, ...(clientId ? { clientId } : {}) });
     cab.log = cab.log.slice(0, MAX_LOG_ENTRIES);
     cab.updatedBy = ctx.user;
     cab.updatedAt = ctx.now;

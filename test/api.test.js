@@ -270,9 +270,9 @@ test('importa tanti punti insieme, senza doppioni se si ripete', async () => {
   }));
   const first = await call('POST', '/api/cabinets/import', { body: { cabinets } });
   assert.equal(first.status, 200);
-  assert.deepEqual(first.data, { created: 120, existing: 0 });
+  assert.deepEqual([first.data.created, first.data.existing, first.data.ids.length], [120, 0, 120]);
   const again = await call('POST', '/api/cabinets/import', { body: { cabinets } });
-  assert.deepEqual(again.data, { created: 0, existing: 120 });
+  assert.deepEqual([again.data.created, again.data.existing, again.data.ids.length], [0, 120, 0]);
   const list = await call('GET', '/api/cabinets');
   assert.equal(list.data.cabinets.filter((c) => c.clientId?.startsWith('imp-prova-')).length, 120);
   const one = list.data.cabinets.find((c) => c.clientId === 'imp-prova-7');
@@ -354,4 +354,95 @@ test('importazione: un clientId non valido rifiuta tutto senza aggiungere nulla'
   ] } });
   assert.equal(res.status, 400);
   assert.equal((await call('GET', '/api/cabinets')).data.cabinets.length, before);
+});
+
+test('tentativi di password in parallelo: non si supera il limite', async () => {
+  const { port } = server.address();
+  const attempt = () => new Promise((resolve) => {
+    const body = JSON.stringify({ name: 'Intruso', password: 'tentativo' });
+    const req = http.request({ host: '127.0.0.1', port, path: '/api/login', method: 'POST',
+      headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body), 'x-forwarded-for': '203.0.113.7' } }, (res) => {
+      res.resume();
+      res.on('end', () => resolve(res.statusCode));
+    });
+    req.on('error', () => resolve(0));
+    req.flushHeaders();
+    setTimeout(() => req.end(body), 150); // la password arriva dopo le intestazioni
+  });
+  const codes = await Promise.all(Array.from({ length: 40 }, attempt));
+  assert.equal(codes.filter((c) => c === 401).length, 10);
+  assert.equal(codes.filter((c) => c === 429).length, 30);
+  // Un altro indirizzo non è bloccato.
+  const other = await call('POST', '/api/login', { body: { name: 'Sara', password: 'segreta' }, auth: false, headers: { 'x-forwarded-for': '198.51.100.20' } });
+  assert.equal(other.status, 200);
+});
+
+test('disco pieno: la modifica non resta in memoria, riprovando si salva', async () => {
+  const created = await call('POST', '/api/cabinets', { body: { code: 'PFP disco', type: 'PFP', lat: 41.5, lng: 14.5 } });
+  const tmp = path.join(dataDir, 'cabinets.json.tmp');
+  fs.mkdirSync(tmp); // la scrittura del file temporaneo fallisce
+  try {
+    const put = await call('PUT', `/api/cabinets/${created.data.id}`, { body: { notes: 'MODIFICA', baseUpdatedAt: created.data.editedAt } });
+    assert.equal(put.status, 500);
+    const log = await call('POST', `/api/cabinets/${created.data.id}/log`, { body: { text: 'nota persa' } });
+    assert.equal(log.status, 500);
+    const del = await call('DELETE', `/api/cabinets/${created.data.id}`);
+    assert.equal(del.status, 500);
+    const now = (await call('GET', '/api/cabinets')).data.cabinets.find((c) => c.id === created.data.id);
+    assert.ok(now, 'la cabina non deve sparire');
+    assert.equal(now.notes, '');
+    assert.equal(now.log.length, 0);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+  const retry = await call('PUT', `/api/cabinets/${created.data.id}`, { body: { notes: 'MODIFICA', baseUpdatedAt: created.data.editedAt } });
+  assert.equal(retry.status, 200);
+  await flush();
+  const disk = JSON.parse(fs.readFileSync(path.join(dataDir, 'cabinets.json'), 'utf8'));
+  assert.equal(disk.cabinets.find((c) => c.id === created.data.id).notes, 'MODIFICA');
+});
+
+test('conflitti: una nota del diario non blocca la modifica, un nuovo invio uguale nemmeno', async () => {
+  const cab = (await call('POST', '/api/cabinets', { body: { code: 'PTE conflitto', type: 'PTE', lat: 41.6, lng: 14.6 } })).data;
+  await call('POST', `/api/cabinets/${cab.id}/log`, { body: { text: 'Passato a vedere' } });
+  const edit = await call('PUT', `/api/cabinets/${cab.id}`, { body: { status: 'fatto', notes: 'Chiuso', baseUpdatedAt: cab.editedAt } });
+  assert.equal(edit.status, 200);
+  // Risposta persa: stesso contenuto rimandato con la base vecchia.
+  const again = await call('PUT', `/api/cabinets/${cab.id}`, { body: { status: 'fatto', notes: 'Chiuso', baseUpdatedAt: cab.editedAt } });
+  assert.equal(again.status, 200);
+  // Contenuto diverso sulla base vecchia: conflitto, con la versione aggiornata.
+  const other = await call('PUT', `/api/cabinets/${cab.id}`, { body: { notes: 'Altro testo', baseUpdatedAt: cab.editedAt } });
+  assert.equal(other.status, 409);
+  assert.equal(other.data.cabinet.notes, 'Chiuso');
+  // Vecchi telefoni che mandano updatedAt continuano a funzionare.
+  const old = await call('PUT', `/api/cabinets/${cab.id}`, { body: { notes: 'Da app vecchia', baseUpdatedAt: other.data.cabinet.updatedAt } });
+  assert.equal(old.status, 200);
+});
+
+test('nota del diario rimandata con lo stesso identificativo: una sola', async () => {
+  const cab = (await call('POST', '/api/cabinets', { body: { code: 'PFS note', type: 'PFS', lat: 41.7, lng: 14.7 } })).data;
+  const body = { text: 'Sostituito connettore', clientId: 'nota-1' };
+  await call('POST', `/api/cabinets/${cab.id}/log`, { body });
+  const second = await call('POST', `/api/cabinets/${cab.id}/log`, { body });
+  assert.equal(second.data.log.filter((l) => l.text === 'Sostituito connettore').length, 1);
+});
+
+test('annulla importazione: solo le proprie cabine', async () => {
+  const res = await call('POST', '/api/cabinets/import', { body: { cabinets: [{ clientId: 'imp-di-marco', code: 'Di Marco', lat: 41.8, lng: 14.8 }] } });
+  assert.deepEqual(res.data.ids, ['imp-di-marco']);
+  const sara = await call('POST', '/api/login', { body: { name: 'Sara', password: 'segreta' }, auth: false, headers: { 'x-forwarded-for': '198.51.100.21' } });
+  const saraCookie = sara.headers.get('set-cookie').split(';')[0];
+  const undo = await fetch(`${base}/api/cabinets/import/undo`, { method: 'POST', headers: { cookie: saraCookie, 'content-type': 'application/json' }, body: JSON.stringify({ clientIds: ['imp-di-marco'] }) });
+  assert.equal((await undo.json()).removed, 0);
+  assert.equal((await call('POST', '/api/cabinets/import/undo', { body: { clientIds: ['imp-di-marco'] } })).data.removed, 1);
+});
+
+test('foto il cui file manca: 404, non errore del server', async () => {
+  const cab = (await call('POST', '/api/cabinets', { body: { code: 'PFP foto', type: 'PFP', lat: 41.9, lng: 14.9 } })).data;
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10, 0x4a, 0x46, 0x49, 0x46, 0, 1]);
+  const up = await call('POST', `/api/cabinets/${cab.id}/photos`, { body: jpeg, headers: { 'content-type': 'image/jpeg' } });
+  const photo = up.data.photos[0];
+  fs.rmSync(path.join(dataDir, 'photos', `${cab.id}-${photo.id}.jpg`));
+  const res = await fetch(`${base}/api/cabinets/${cab.id}/photos/${photo.id}`, { headers: { cookie } });
+  assert.equal(res.status, 404);
 });

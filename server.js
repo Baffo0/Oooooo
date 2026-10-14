@@ -63,14 +63,30 @@ function persist() {
   });
 }
 
-async function persistOrUndo(added) {
+// Se il salvataggio su disco fallisce, la modifica si annulla anche in memoria: chi riprova la
+// rifà davvero, e nessuno vede come salvata una cosa che al riavvio del server sparirebbe.
+async function persistOr(undo) {
   try {
     await persist();
   } catch (err) {
-    Core.undoCreate(db, added);
+    undo();
     etag = computeEtag();
     throw err;
   }
+}
+
+const persistOrUndo = (added) => persistOr(() => Core.undoCreate(db, added));
+
+// Copia di una cabina prima di modificarla, per poterla rimettere com'era.
+function snapshot(id) {
+  const i = db.cabinets.findIndex((c) => c.id === id);
+  const copy = i >= 0 ? structuredClone(db.cabinets[i]) : null;
+  return () => {
+    if (!copy) return;
+    const j = db.cabinets.findIndex((c) => c.id === id);
+    if (j >= 0) db.cabinets[j] = copy;
+    else db.cabinets.splice(Math.min(i, db.cabinets.length), 0, copy);
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -145,22 +161,37 @@ function sessionCookie(req, value, maxAgeSeconds) {
 
 // Dopo 10 password sbagliate in 15 minuti dallo stesso IP l'accesso viene bloccato.
 // Contano solo gli errori: molti colleghi possono uscire dallo stesso IP (rete mobile, ufficio).
+// Al massimo 10 password sbagliate ogni 15 minuti per indirizzo. Il tentativo si conta subito,
+// prima di leggere la password: anche centinaia di richieste in parallelo restano nel limite.
+// Se la password è giusta (o la richiesta non la verifica) il tentativo viene restituito.
 const loginFailures = new Map();
-function loginBlocked(ip) {
-  const entry = loginFailures.get(ip);
-  if (!entry) return false;
-  if (entry.reset < Date.now()) {
-    loginFailures.delete(ip);
-    return false;
+function takeLoginAttempt(ip) {
+  const now = Date.now();
+  let entry = loginFailures.get(ip);
+  if (!entry || entry.reset < now) {
+    if (loginFailures.size > 5000) for (const [k, v] of loginFailures) if (v.reset < now) loginFailures.delete(k);
+    entry = { count: 0, reset: now + 15 * 60e3 };
+    loginFailures.set(ip, entry);
   }
-  return entry.count >= 10;
+  if (entry.count >= 10) return false;
+  entry.count += 1;
+  return true;
 }
 
-function recordLoginFailure(ip) {
-  const now = Date.now();
+function refundLoginAttempt(ip) {
   const entry = loginFailures.get(ip);
-  if (!entry || entry.reset < now) loginFailures.set(ip, { count: 1, reset: now + 15 * 60e3 });
-  else entry.count += 1;
+  if (entry && entry.count > 0) entry.count -= 1;
+}
+
+// Indirizzo del telefono. Dietro un proxy (Render, Caddy) è l'ultimo di X-Forwarded-For, ma solo
+// se la connessione arriva da una rete interna: chi raggiunge il server direttamente da internet
+// non può fingersi un altro indirizzo. TRUST_PROXY=1 o 0 forza la scelta.
+const PRIVATE_PEER = /^(::1$|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|::ffff:(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)|f[cd][0-9a-f]{2}:|fe80:)/i;
+function clientIp(req) {
+  const peer = req.socket.remoteAddress || '';
+  const trust = process.env.TRUST_PROXY === '1' || (process.env.TRUST_PROXY !== '0' && PRIVATE_PEER.test(peer));
+  const forwarded = trust ? req.headers['x-forwarded-for'] : '';
+  return (forwarded && forwarded.split(',').pop().trim()) || peer;
 }
 
 // ---------------------------------------------------------------------------
@@ -250,15 +281,20 @@ async function handleApi(req, res, url) {
   const method = req.method;
 
   if (pathname === '/api/login' && method === 'POST') {
-    // L'ultimo indirizzo è quello aggiunto dal proxy (Render, Caddy): i precedenti li sceglie il client.
-    const ip = req.headers['x-forwarded-for']?.split(',').pop().trim() || req.socket.remoteAddress;
-    if (loginBlocked(ip)) throw new HttpError(429, 'Troppi tentativi, riprova tra qualche minuto');
-    const body = await readJson(req);
-    const name = Core.cleanText(body.name, 40);
-    if (!name) throw new HttpError(400, 'Inserisci il tuo nome');
-    if (TEAM_PASSWORD && !passwordMatches(body.password || '')) {
-      recordLoginFailure(ip);
-      throw new HttpError(401, 'Password di squadra errata');
+    const ip = clientIp(req);
+    if (!takeLoginAttempt(ip)) throw new HttpError(429, 'Troppi tentativi, riprova tra qualche minuto');
+    let wrongPassword = false;
+    let name;
+    try {
+      const body = await readJson(req);
+      name = Core.cleanText(body.name, 40);
+      if (!name) throw new HttpError(400, 'Inserisci il tuo nome');
+      if (TEAM_PASSWORD && !passwordMatches(body.password || '')) {
+        wrongPassword = true;
+        throw new HttpError(401, 'Password di squadra errata');
+      }
+    } finally {
+      if (!wrongPassword) refundLoginAttempt(ip);
     }
     const cookie = sessionCookie(req, createToken(name), SESSION_DAYS * 86400);
     return sendJson(res, 200, { name }, { 'Set-Cookie': cookie });
@@ -298,52 +334,49 @@ async function handleApi(req, res, url) {
   }
 
   if (pathname === '/api/cabinets/import/undo' && method === 'POST') {
-    const before = db.cabinets;
-    const removed = Core.undoImport(db, await readJson(req, MAX_IMPORT_BYTES));
-    if (removed.length) {
-      try {
-        await persist();
-      } catch (err) {
-        db.cabinets = before;
-        etag = computeEtag();
-        throw err;
-      }
-    }
+    const removed = Core.undoImport(db, await readJson(req, MAX_IMPORT_BYTES), ctx);
+    if (removed.length) await persistOr(() => db.cabinets.push(...removed));
     return sendJson(res, 200, { removed: removed.length });
   }
 
   if (pathname === '/api/cabinets/import' && method === 'POST') {
     const { created, existing, added } = Core.importCabinets(db, await readJson(req, MAX_IMPORT_BYTES), ctx);
     if (created) await persistOrUndo(added);
-    return sendJson(res, 200, { created, existing });
+    // Solo quelle create da questa importazione: "Annulla" toglierà queste e nessun'altra.
+    return sendJson(res, 200, { created, existing, ids: added.map((c) => c.clientId) });
   }
 
   let m = pathname.match(/^\/api\/cabinets\/([\w-]+)$/);
   if (m && method === 'PUT') {
     const body = await readJson(req);
+    const restore = snapshot(m[1]);
     const cab = Core.updateCabinet(db, m[1], body, ctx);
-    await persist();
+    await persistOr(restore);
     return sendJson(res, 200, cab);
   }
 
   if (m && method === 'DELETE') {
+    const restore = snapshot(m[1]);
     const cab = Core.deleteCabinet(db, m[1]);
-    await persist();
+    await persistOr(restore);
     await Promise.all(cab.photos.map((p) => fsp.rm(photoPath(cab.id, p.id), { force: true })));
     return sendJson(res, 200, { ok: true });
   }
 
   m = pathname.match(/^\/api\/cabinets\/([\w-]+)\/log$/);
   if (m && method === 'POST') {
-    const cab = Core.addLog(db, m[1], await readJson(req), ctx);
-    await persist();
+    const body = await readJson(req);
+    const restore = snapshot(m[1]);
+    const cab = Core.addLog(db, m[1], body, ctx);
+    await persistOr(restore);
     return sendJson(res, 201, cab);
   }
 
   m = pathname.match(/^\/api\/cabinets\/([\w-]+)\/log\/([\w-]+)$/);
   if (m && method === 'DELETE') {
+    const restore = snapshot(m[1]);
     const cab = Core.deleteLog(db, m[1], m[2], ctx);
-    await persist();
+    await persistOr(restore);
     return sendJson(res, 200, cab);
   }
 
@@ -356,15 +389,26 @@ async function handleApi(req, res, url) {
     const buf = await readBody(req, Core.MAX_PHOTO_BYTES);
     Core.checkJpeg(buf, req.headers['content-type']);
     const photo = Core.newPhoto(ctx);
-    await fsp.writeFile(photoPath(cab.id, photo.id), buf);
+    const file = photoPath(cab.id, photo.id);
+    try {
+      await fsp.writeFile(file, buf);
+    } catch {
+      // Disco pieno: niente file a metà.
+      await fsp.rm(file, { force: true });
+      throw new HttpError(500, 'Salvataggio sul server non riuscito, riprova');
+    }
+    const restore = snapshot(m[1]);
     try {
       // Durante il caricamento la cabina potrebbe essere stata eliminata o aver ricevuto altre foto.
       Core.addPhoto(db, m[1], photo);
     } catch (err) {
-      await fsp.rm(photoPath(cab.id, photo.id), { force: true });
+      await fsp.rm(file, { force: true });
       throw err;
     }
-    await persist();
+    await persistOr(() => {
+      restore();
+      fsp.rm(file, { force: true }).catch(() => {});
+    });
     return sendJson(res, 201, Core.findCabinet(db, m[1]));
   }
 
@@ -372,14 +416,20 @@ async function handleApi(req, res, url) {
   if (m && method === 'GET') {
     const cab = Core.findCabinet(db, m[1]);
     if (!cab.photos.some((p) => p.id === m[2])) throw new HttpError(404, 'Foto non trovata');
-    const data = await fsp.readFile(photoPath(cab.id, m[2]));
+    let data;
+    try {
+      data = await fsp.readFile(photoPath(cab.id, m[2]));
+    } catch {
+      throw new HttpError(404, 'Foto non trovata');
+    }
     res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'private, max-age=31536000, immutable' });
     return res.end(data);
   }
 
   if (m && method === 'DELETE') {
+    const restore = snapshot(m[1]);
     const cab = Core.deletePhoto(db, m[1], m[2]);
-    await persist();
+    await persistOr(restore);
     await fsp.rm(photoPath(cab.id, m[2]), { force: true });
     return sendJson(res, 200, cab);
   }
