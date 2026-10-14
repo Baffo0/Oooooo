@@ -63,6 +63,9 @@
     for (const cab of db.cabinets) {
       if (!Array.isArray(cab.photos)) cab.photos = [];
       if (!Array.isArray(cab.log)) cab.log = [];
+      // Versione dei dati della cabina, che le note del diario non cambiano: per le cabine
+      // salvate prima che esistesse vale l'ultima modifica nota.
+      if (!cab.editedAt) cab.editedAt = cab.updatedAt || cab.createdAt;
     }
     db.version = 1;
     return db;

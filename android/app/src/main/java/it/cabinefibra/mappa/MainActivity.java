@@ -7,11 +7,15 @@ import android.content.ClipData;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.location.LocationManager;
 import android.net.Uri;
 import android.net.http.SslError;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.provider.MediaStore;
+import android.provider.Settings;
+import android.util.Base64;
 import android.util.Log;
 import android.view.ViewGroup;
 import android.view.WindowManager;
@@ -19,6 +23,7 @@ import android.webkit.ConsoleMessage;
 import android.webkit.CookieManager;
 import android.webkit.GeolocationPermissions;
 import android.webkit.JavascriptInterface;
+import android.webkit.RenderProcessGoneDetail;
 import android.webkit.ServiceWorkerClient;
 import android.webkit.ServiceWorkerController;
 import android.webkit.SslErrorHandler;
@@ -37,18 +42,22 @@ import androidx.activity.OnBackPressedCallback;
 import androidx.activity.result.ActivityResult;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
 import androidx.core.graphics.Insets;
+import androidx.core.location.LocationManagerCompat;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.webkit.WebViewAssetLoader;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.UnsupportedEncodingException;
 import java.net.URISyntaxException;
@@ -81,6 +90,9 @@ public class MainActivity extends AppCompatActivity {
     private static final String PREFS = "cabine";
     private static final String KEY_MODE = "mode";
     private static final String KEY_SERVER_URL = "serverUrl";
+    // Foto scattata mentre Android chiudeva l'app: la web app la propone di nuovo alla riapertura.
+    private static final String KEY_RECOVERED_PHOTO = "recoveredPhoto";
+    private static final long MAX_RECOVERED_PHOTO = 25L * 1024 * 1024;
     private static final String MODE_LOCAL = "local";
     private static final String MODE_SERVER = "server";
 
@@ -118,8 +130,11 @@ public class MainActivity extends AppCompatActivity {
     // Foto della fotocamera in corso, salvata per accorgersi se Android chiude l'app nel frattempo.
     private static final String STATE_CAMERA_FILE = "cameraFile";
 
+    private FrameLayout root;
     private WebView webView;
     private WebViewAssetLoader assetLoader;
+    private long lastRendererCrash;
+    private long locationAskedAt;
 
     // Richieste di posizione arrivate mentre aspettiamo la risposta al permesso.
     private final List<GeoRequest> pendingGeoRequests = new ArrayList<>();
@@ -170,7 +185,7 @@ public class MainActivity extends AppCompatActivity {
 
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG);
 
-        FrameLayout root = new FrameLayout(this);
+        root = new FrameLayout(this);
         root.setBackgroundColor(ContextCompat.getColor(this, R.color.accent));
         webView = new WebView(this);
         root.addView(webView, new FrameLayout.LayoutParams(
@@ -241,14 +256,55 @@ public class MainActivity extends AppCompatActivity {
             pendingFileCallback.onReceiveValue(null);
             pendingFileCallback = null;
         }
-        if (webView != null) {
-            webView.stopLoading();
-            ViewGroup parent = (ViewGroup) webView.getParent();
-            if (parent != null) parent.removeView(webView);
-            webView.destroy();
-            webView = null;
-        }
+        destroyWebView(webView);
+        webView = null;
         super.onDestroy();
+    }
+
+    private static void destroyWebView(WebView view) {
+        if (view == null) return;
+        view.stopLoading();
+        ViewGroup parent = (ViewGroup) view.getParent();
+        if (parent != null) parent.removeView(view);
+        view.destroy();
+    }
+
+    /**
+     * La parte della WebView che disegna la pagina si è chiusa (memoria del telefono esaurita,
+     * errore): si butta la WebView morta e se ne crea una nuova con la stessa pagina. Se la pagina
+     * si chiude di nuovo per un errore entro un minuto si apre la pagina di scelta, altrimenti
+     * l'app si richiuderebbe a ogni avvio.
+     */
+    private void onRendererGone(WebView view, boolean crashed) {
+        if (view != webView) {
+            destroyWebView(view);
+            return;
+        }
+        long now = SystemClock.elapsedRealtime();
+        boolean again = crashed && lastRendererCrash != 0 && now - lastRendererCrash < 60_000;
+        if (crashed) lastRendererCrash = now;
+        // La scelta di un file in corso apparteneva alla pagina chiusa: una foto scattata nel
+        // frattempo viene recuperata come dopo la chiusura dell'app (onFileChooserResult).
+        ValueCallback<Uri[]> callback = pendingFileCallback;
+        pendingFileCallback = null;
+        if (callback != null) {
+            try {
+                callback.onReceiveValue(null);
+            } catch (RuntimeException e) {
+                Log.w(TAG, "Scelta file della pagina chiusa", e);
+            }
+        }
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        destroyWebView(webView);
+        webView = new WebView(this);
+        root.addView(webView, 0, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        configureWebView();
+        if (again) {
+            showSetupWithError("La mappa si è chiusa per un errore. Riprova o scegli un'altra modalità.");
+        } else {
+            webView.loadUrl(startUrl());
+        }
     }
 
     // ---------------------------------------------------------------------------------
@@ -357,6 +413,15 @@ public class MainActivity extends AppCompatActivity {
         }
 
         @Override
+        public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+            // Senza questa risposta Android chiuderebbe tutta l'app.
+            boolean crashed = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && detail != null && detail.didCrash();
+            Log.w(TAG, crashed ? "La pagina si è chiusa per un errore" : "Android ha chiuso la pagina per liberare memoria");
+            onRendererGone(view, crashed);
+            return true;
+        }
+
+        @Override
         public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {
             // Mai proseguire con un certificato non valido.
             handler.cancel();
@@ -376,6 +441,7 @@ public class MainActivity extends AppCompatActivity {
             // smette da solo di chiederlo dopo due rifiuti.
             if (hasFineLocationPermission()) {
                 callback.invoke(origin, true, false);
+                if (!isLocationOn()) askLocationOn();
                 return;
             }
             pendingGeoRequests.add(new GeoRequest(origin, callback));
@@ -574,13 +640,44 @@ public class MainActivity extends AppCompatActivity {
             request.callback.invoke(request.origin, granted, false);
         }
         if (requests.isEmpty()) return;
-        if (!granted) {
+        if (granted && !isLocationOn()) {
+            askLocationOn();
+        } else if (!granted) {
             Toast.makeText(this, "Senza il permesso di posizione il GPS non funziona: puoi attivarlo "
                     + "nelle impostazioni dell'app.", Toast.LENGTH_LONG).show();
         } else if (!precise) {
             Toast.makeText(this, "Posizione approssimativa: attiva «Posizione precisa» nelle "
                     + "impostazioni dell'app per salvare le cabine nel punto giusto.", Toast.LENGTH_LONG).show();
         }
+    }
+
+    /** Posizione del telefono accesa (dalle impostazioni rapide si può spegnere tutta). */
+    private boolean isLocationOn() {
+        LocationManager manager = (LocationManager) getSystemService(LOCATION_SERVICE);
+        return manager == null || LocationManagerCompat.isLocationEnabled(manager);
+    }
+
+    /**
+     * Con la posizione spenta il GPS della pagina non risponde e non dà nemmeno errore: Chrome
+     * chiederebbe di attivarla, qui lo facciamo noi (non più di una volta ogni 15 secondi).
+     */
+    private void askLocationOn() {
+        if (isFinishing() || isDestroyed()) return;
+        long now = SystemClock.elapsedRealtime();
+        if (locationAskedAt != 0 && now - locationAskedAt < 15_000) return;
+        locationAskedAt = now;
+        new AlertDialog.Builder(this)
+                .setTitle("Posizione spenta")
+                .setMessage("Attiva la posizione del telefono per vedere dove sei e salvare le cabine nel punto giusto.")
+                .setPositiveButton("Attiva", (dialog, which) -> {
+                    try {
+                        startActivity(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS));
+                    } catch (ActivityNotFoundException e) {
+                        Toast.makeText(this, "Attiva la posizione dalle impostazioni del telefono", Toast.LENGTH_LONG).show();
+                    }
+                })
+                .setNegativeButton("Non ora", null)
+                .show();
     }
 
     // ---------------------------------------------------------------------------------
@@ -670,11 +767,21 @@ public class MainActivity extends AppCompatActivity {
         cameraUri = null;
         if (callback == null) {
             // Android ha chiuso l'app mentre era aperta la fotocamera o la galleria: la pagina
-            // è stata ricaricata e non aspetta più nessuna foto. Almeno lo diciamo.
+            // è stata ricaricata e non aspetta più nessuna foto. La foto scattata è nel nostro
+            // file: la web app la propone per la cabina giusta (takeRecoveredPhoto). Una foto
+            // della galleria invece non si può più leggere: almeno lo diciamo.
             Intent lostData = result.getData();
+            boolean shot = result.getResultCode() == RESULT_OK && photo != null && photo.length() > 0;
+            if (shot) {
+                prefs().edit().putString(KEY_RECOVERED_PHOTO, photo.getAbsolutePath()).apply();
+                // Pagina già ripartita (si era chiusa solo la pagina): glielo diciamo subito.
+                if (webView != null) {
+                    webView.evaluateJavascript("window.cabineRecoveredPhoto&&window.cabineRecoveredPhoto()", null);
+                }
+                return;
+            }
             boolean lost = result.getResultCode() == RESULT_OK
-                    && ((photo != null && photo.length() > 0)
-                    || (lostData != null && (lostData.getData() != null || lostData.getClipData() != null)));
+                    && lostData != null && (lostData.getData() != null || lostData.getClipData() != null);
             if (photo != null && photo.length() == 0) {
                 //noinspection ResultOfMethodCallIgnored
                 photo.delete();
@@ -841,6 +948,51 @@ public class MainActivity extends AppCompatActivity {
         @JavascriptInterface
         public void openExternal(String url) {
             runOnUiThread(() -> openExternalUrl(url));
+        }
+
+        /** false se la posizione del telefono è spenta (e in quel caso propone di accenderla). */
+        @JavascriptInterface
+        public boolean checkLocation() {
+            boolean on = isLocationOn();
+            if (!on) runOnUiThread(MainActivity.this::askLocationOn);
+            return on;
+        }
+
+        /**
+         * Foto scattata mentre Android chiudeva l'app, in base64 (una volta sola), oppure "".
+         */
+        @JavascriptInterface
+        public String takeRecoveredPhoto() {
+            String path = prefs().getString(KEY_RECOVERED_PHOTO, null);
+            if (path == null) return "";
+            prefs().edit().remove(KEY_RECOVERED_PHOTO).apply();
+            File file = new File(path);
+            try {
+                // Solo file nostri, nella cartella delle foto della fotocamera.
+                File parent = file.getParentFile();
+                File dir = new File(getCacheDir(), "images");
+                if (parent == null || !dir.getCanonicalPath().equals(parent.getCanonicalPath())) return "";
+                if (!file.isFile() || file.length() == 0 || file.length() > MAX_RECOVERED_PHOTO) {
+                    //noinspection ResultOfMethodCallIgnored
+                    file.delete();
+                    return "";
+                }
+                byte[] bytes = new byte[(int) file.length()];
+                int read = 0;
+                try (InputStream in = new FileInputStream(file)) {
+                    while (read < bytes.length) {
+                        int n = in.read(bytes, read, bytes.length - read);
+                        if (n < 0) break;
+                        read += n;
+                    }
+                }
+                //noinspection ResultOfMethodCallIgnored
+                file.delete();
+                return read == bytes.length ? Base64.encodeToString(bytes, Base64.NO_WRAP) : "";
+            } catch (IOException e) {
+                Log.w(TAG, "Foto recuperata non leggibile", e);
+                return "";
+            }
         }
     }
 

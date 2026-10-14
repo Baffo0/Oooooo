@@ -21,7 +21,7 @@ const WRITE_TIMEOUT_MS = 30000; // salvataggi: riprovarli è sicuro, il server r
 const LOW_ACCURACY_M = 30;
 // Deve coincidere con data-app in index.html: se dopo un aggiornamento arrivano una pagina
 // vecchia e uno script nuovo (segnale debole), si ricarica una volta invece di restare bianchi.
-const APP_VERSION = '2026.10.14';
+const APP_VERSION = '2026.10.14.2';
 if (document.documentElement.dataset.app !== APP_VERSION) {
   let reloaded = null;
   try { reloaded = sessionStorage.getItem('cabine.reload'); } catch { /* niente */ }
@@ -375,7 +375,17 @@ function startApp() {
       fitInitialView();
     }, 5000);
     setInterval(() => { if (!document.hidden) refresh(); }, REFRESH_MS);
-    document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) return;
+      refresh();
+      // Di ritorno nell'app (es. dopo aver acceso la posizione) il GPS fermo riparte.
+      if (watchId !== null && Date.now() - (state.positionAt || 0) > 30000) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+        startWatch();
+      }
+    });
+    recoverPhoto();
     window.addEventListener('online', () => refresh());
     window.addEventListener('offline', () => { state.offline = true; renderSync(); });
   }
@@ -398,6 +408,9 @@ async function refresh() {
     });
     const changesBefore = state.localChanges;
     const res = await api('/api/cabinets', { headers: state.etag ? { 'If-None-Match': state.etag } : {} });
+    // Prima di disegnare: l'elenco vuoto deve dire "nessuna cabina", non più "caricamento".
+    state.offline = false;
+    state.lastSync = new Date();
     if (state.localChanges !== changesBefore) {
       // Nel frattempo abbiamo salvato qualcosa: questa copia è già vecchia, ne chiediamo una nuova.
       setTimeout(refresh, 0);
@@ -407,15 +420,13 @@ async function refresh() {
       saveCache();
       renderAll();
     }
-    state.offline = false;
-    state.lastSync = new Date();
   } catch (err) {
     // Rete assente o server fermo (riavvio, aggiornamento): si lavora sulla copia del telefono.
     if (isNetworkError(err) || err.status >= 500) state.offline = true;
   } finally {
     refreshing = false;
     renderSync();
-    if (!state.lastSync && !state.cabinets.length) renderList(); // "caricamento" diventa "offline"
+    if (!state.cabinets.length) renderList(); // "caricamento" diventa "offline" o "nessuna cabina"
   }
 }
 
@@ -888,10 +899,25 @@ function updateMyPosition(pos) {
   }
 }
 
+// Nell'app Android con la posizione del telefono spenta il GPS non risponde e non dà errore:
+// si dice subito cosa fare (l'app propone anche di accenderla).
+const LOCATION_OFF = 'La posizione del telefono è spenta: attivala e riprova';
+function locationOff() {
+  try {
+    return NATIVE?.checkLocation?.() === false;
+  } catch {
+    return false;
+  }
+}
+
 function getPosition() {
   return new Promise((resolve, reject) => {
     if (!navigator.geolocation) {
       reject(new Error('Il dispositivo non supporta la geolocalizzazione'));
+      return;
+    }
+    if (locationOff()) {
+      reject(new Error(LOCATION_OFF));
       return;
     }
     navigator.geolocation.getCurrentPosition(
@@ -920,7 +946,7 @@ function getPosition() {
 // richiesta apposita). Si segnala un errore solo se falliscono entrambe.
 function freshPosition() {
   if (state.position && Date.now() - state.positionAt < 10000) return Promise.resolve(state.position);
-  if (watchId === null) return getPosition();
+  if (watchId === null || locationOff()) return getPosition();
   return new Promise((resolve, reject) => {
     let done = false;
     let failures = 0;
@@ -1318,10 +1344,8 @@ async function searchPlace(q) {
     }
     const lat = Number(results[0].lat);
     const lng = Number(results[0].lon);
-    if (!isDesktop()) {
-      toggleList(false);
-      closeDetail(); // altrimenti il punto trovato finirebbe sotto la scheda
-    }
+    if (!isDesktop()) toggleList(false);
+    closeDetail(); // altrimenti il punto trovato finirebbe sotto la scheda (anche su tablet)
     setFollow(false);
     state.userMovedMap = true;
     placeMarker?.remove();
@@ -1434,8 +1458,12 @@ function renderDetail() {
   const key = cab.id || cab.clientId;
   // Aggiornamento automatico senza cambiamenti per questa cabina: la scheda resta com'è
   // (chi sta scrivendo nel diario non perde il punto in cui era).
-  const json = JSON.stringify(cab) + (state.position ? '' : '-');
-  if (!sheet.hidden && sheet.dataset.cabId === key && sheet.renderedJson === json) return;
+  const distanceText = state.position ? ` · a ${fmtDistance(distance(state.position, cab))} da te` : '';
+  const json = JSON.stringify(cab) + distanceText;
+  if (!sheet.hidden && sheet.dataset.cabId === key && sheet.renderedJson === json) {
+    $('#fabs').hidden = !isDesktop();
+    return;
+  }
   const prevText = $('#log-text', sheet);
   let caret = null;
   if (prevText && sheet.dataset.cabId) {
@@ -1444,7 +1472,6 @@ function renderDetail() {
   }
   const hadFocus = caret !== null && sheet.dataset.cabId === key;
   const dest = `${cab.lat},${cab.lng}`;
-  const distanceText = state.position ? ` · a ${fmtDistance(distance(state.position, cab))} da te` : '';
 
   sheet.innerHTML = `
     <div class="sheet-head">
@@ -1531,7 +1558,10 @@ function renderDetail() {
   $('#btn-edit').addEventListener('click', () => openForm({ mode: 'edit', cab }));
   $('#btn-move').addEventListener('click', () => moveCabinet(cab));
   $('#btn-delete').addEventListener('click', () => deleteCabinet(cab));
-  $('#btn-photo')?.addEventListener('click', () => $('#photo-input').click());
+  $('#btn-photo')?.addEventListener('click', () => {
+    saveJson('cabine.photoFor', { id: cab.id, at: Date.now() });
+    $('#photo-input').click();
+  });
   $('#log-form').addEventListener('submit', (e) => { e.preventDefault(); addLog(cab); });
   sheet.querySelectorAll('[data-photo]').forEach((b) => b.addEventListener('click', () => deletePhoto(cab, b.dataset.photo)));
   sheet.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => openViewer(cab, b.dataset.view)));
@@ -1602,17 +1632,47 @@ async function deleteCabinet(cab) {
 $('#photo-input').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   e.target.value = '';
+  store('cabine.photoFor', null);
   const cab = getCabinet(state.selectedId);
   if (!file || !cab?.id) return;
+  await addPhoto(cab.id, file);
+});
+
+async function addPhoto(cabId, file) {
   toast('Caricamento foto…', false, 130000);
   try {
     const blob = await resizeImage(file, 1600, 0.82);
-    upsertCabinet((await api(`/api/cabinets/${cab.id}/photos`, { method: 'POST', body: blob, timeout: 120000 })).data);
+    upsertCabinet((await api(`/api/cabinets/${cabId}/photos`, { method: 'POST', body: blob, timeout: 120000 })).data);
     toast('Foto aggiunta');
   } catch (err) {
     toast(isNetworkError(err) ? 'Caricamento non riuscito, controlla la connessione' : err.message, true);
   }
-});
+}
+
+// Telefoni con poca memoria: mentre la fotocamera è aperta Android può chiudere l'app. La foto
+// scattata resta all'app Android, che la ridà alla riapertura: si propone di aggiungerla alla
+// cabina per cui era stata scattata.
+function recoverPhoto() {
+  let data = '';
+  try {
+    data = NATIVE?.takeRecoveredPhoto?.() || '';
+  } catch { /* app Android vecchia */ }
+  if (!data) return;
+  const target = loadJson('cabine.photoFor', null);
+  store('cabine.photoFor', null);
+  if (!target?.id || Date.now() - target.at > 6 * 3600 * 1000) return;
+  const raw = atob(data);
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  const file = new Blob([bytes], { type: 'image/jpeg' });
+  // Una domanda e non un avviso: un altro avviso all'avvio (rete, mappa) la coprirebbe.
+  setTimeout(() => {
+    const cab = getCabinet(target.id);
+    if (confirm(`Android ha chiuso l'app mentre scattavi una foto. Aggiungerla a “${cab ? cabinetTitle(cab) : 'la cabina'}”?`)) addPhoto(target.id, file);
+  }, 600);
+}
+// La foto arriva dopo l'avvio (si era chiusa solo la pagina, la fotocamera era ancora aperta).
+window.cabineRecoveredPhoto = () => { if (started && state.me) recoverPhoto(); };
 
 function photoUrl(cabId, photoId) {
   return `/api/cabinets/${encodeURIComponent(cabId)}/photos/${encodeURIComponent(photoId)}`;
@@ -1831,6 +1891,13 @@ function openForm(opts) {
 }
 
 $('#form-cancel').addEventListener('click', () => $('#form-dialog').close());
+// Indietro di Android o Esc con qualcosa già scritto: prima di buttarlo si chiede.
+$('#cabinet-form').addEventListener('input', () => { if (state.form) state.form.dirty = true; });
+function formDiscardOk() {
+  if (!state.form?.dirty) return true;
+  return confirm(state.form.mode === 'edit' ? 'Uscire senza salvare le modifiche?' : 'Scartare la cabina non salvata?');
+}
+$('#form-dialog').addEventListener('cancel', (e) => { if (!formDiscardOk()) e.preventDefault(); });
 $('#form-dialog').addEventListener('close', () => { geocodeSeq += 1; });
 
 $('#btn-geocode').addEventListener('click', () => {
@@ -2373,7 +2440,7 @@ function exportKml() {
 // ---------------------------------------------------------------------------
 
 const importState = { name: '', points: [], groupings: {}, grouping: 'layers', unchecked: new Set(), busy: false };
-const IMPORT_BATCH = 500; // punti per richiesta: con molti punti si va a blocchi
+const IMPORT_BATCH = 200; // punti per richiesta: con molti punti si va a blocchi
 
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 const normName = (s) => String(s || '').trim().replace(/\s+/g, ' ').toLowerCase();
@@ -2430,26 +2497,40 @@ function nearIndex(list) {
     if (!grid.has(k)) grid.set(k, []);
     grid.get(k).push(c);
   }
+  // Restituisce le cabine entro `meters` dal punto, dalla più vicina.
   return (p, meters, match = () => true) => {
     const cy = Math.floor(p.lat * 1e4);
     const cx = Math.floor(p.lng * 1e4);
+    const found = [];
     for (let dy = -1; dy <= 1; dy++) {
       for (let dx = -1; dx <= 1; dx++) {
-        const near = grid.get(`${cy + dy}|${cx + dx}`) || [];
-        if (near.some((c) => distance(c, p) < meters && match(c))) return true;
+        for (const c of grid.get(`${cy + dy}|${cx + dx}`) || []) {
+          const d = distance(c, p);
+          if (d < meters && match(c)) found.push([d, c]);
+        }
       }
     }
-    return false;
+    return found.sort((a, b) => a[0] - b[0]).map(([, c]) => c);
   };
 }
 
 // Già nell'archivio: importato prima (stesso identificativo), con lo stesso nome a meno di
 // 50 m, senza nome con un'altra cabina a meno di 3 m, oppure rinominato su My Maps: una cabina
-// importata dello stesso tipo a meno di 2 m il cui punto non c'è più nel file.
+// importata dello stesso tipo a meno di 2 m il cui punto non c'è più in questo file.
 function markPresent(points) {
   const ids = new Set(state.cabinets.map((c) => c.clientId).filter(Boolean));
   const inFile = new Set(points.map((p) => p.clientId));
-  const nearImported = nearIndex(state.cabinets.filter((c) => c.clientId?.startsWith('imp-')));
+  // Una cabina sparita dal file conta come rinominata solo se il file è la stessa mappa da cui
+  // era arrivata (stesso livello, o almeno un punto già importato): un altro file della stessa
+  // zona (lotto 2 dopo il lotto 1) non la contiene e non vuol dire che sia stata rinominata.
+  const folders = new Set(points.map((p) => p.folder).filter(Boolean));
+  const sameMap = points.some((p) => ids.has(p.clientId));
+  const layerOf = (c) => [...String(c.notes || '').matchAll(/^Livello: (.+)$/gm)].pop()?.[1];
+  const nearGone = nearIndex(state.cabinets.filter((c) => {
+    if (!c.clientId?.startsWith('imp-') || inFile.has(c.clientId)) return false;
+    const layer = layerOf(c);
+    return layer ? folders.has(layer) : sameMap;
+  }));
   const nearAny = nearIndex(state.cabinets);
   const byName = new Map();
   for (const c of state.cabinets) {
@@ -2459,11 +2540,18 @@ function markPresent(points) {
     byName.get(key).push(c);
   }
   const sameName = (key, p) => Boolean(key) && (byName.get(key) || []).some((c) => distance(c, p) < 50);
+  const renamed = new Map(); // cabina sparita dal file -> punti nuovi nello stesso posto
   for (const p of points) {
-    p.present = ids.has(p.clientId) || nearImported(p, 2, (c) => (!p.type || c.type === p.type) && !inFile.has(c.clientId))
-      || sameName(normName(p.code), p)
-      || sameName(normName(p.idName), p) || (!p.code && nearAny(p, 3));
+    p.present = ids.has(p.clientId) || sameName(normName(p.code), p)
+      || sameName(normName(p.idName), p) || (!p.code && nearAny(p, 3).length > 0);
+    if (p.present) continue;
+    const gone = nearGone(p, 2, (c) => !p.type || c.type === p.type)[0];
+    if (gone) renamed.set(gone, [...(renamed.get(gone) || []), p.clientId]);
   }
+  // Un rinominato prende il posto di una sola cabina: se nello stesso punto ora ce ne sono più
+  // (es. "scala A" e "scala B" al posto di una), sono cabine nuove e si importano.
+  const absorbed = new Set([...renamed.values()].filter((list) => new Set(list).size === 1).map((list) => list[0]));
+  for (const p of points) if (absorbed.has(p.clientId)) p.present = true;
 }
 
 function openImport(data) {
@@ -2525,17 +2613,17 @@ function importPlan() {
   // della sua zona (es. la copia in NA_02 per un punto della zona NA_02).
   const chosen = new Map();
   const fits = (p) => p.folder.split(' › ').pop() === p.groups[key];
-  let present = 0;
+  const present = new Set(); // una cabina già presente copiata in due livelli conta una volta
   for (const p of selected) {
     if (p.present) {
-      present += 1;
+      present.add(p.clientId);
       continue;
     }
     const other = chosen.get(p.clientId);
     if (!other || (!fits(other) && fits(p))) chosen.set(p.clientId, p);
   }
   const fresh = [...chosen.values()];
-  return { selected, fresh, present, doubles: selected.length - present - fresh.length };
+  return { selected, fresh, present: present.size, doubles: selected.length - present.size - fresh.length };
 }
 
 function updateImportSummary() {
@@ -2553,7 +2641,7 @@ function updateImportSummary() {
   if (fresh.length) {
     text = fresh.length === 1 ? 'Verrà aggiunta 1 cabina' : `Verranno aggiunte ${fresh.length} cabine`;
     if (all.length > 1) {
-      text += picked.length === all.length ? ` da tutti i ${all.length} gruppi`
+      text += picked.length === all.length ? (all.length === 2 ? ' da entrambi i gruppi' : ` da tutti e ${all.length} i gruppi`)
         : picked.length <= 3 ? ` da ${picked.join(', ')}` : ` da ${picked.length} gruppi su ${all.length} (${picked[0]} … ${picked[picked.length - 1]})`;
     }
     if (present) text += ` · ${plural(present, 'c\'è già e viene saltata', 'ci sono già e vengono saltate')}`;
@@ -2654,8 +2742,10 @@ $('#import-form').addEventListener('submit', async (e) => {
     for (let i = 0; i < list.length; i += IMPORT_BATCH) {
       $('#import-go').textContent = list.length > IMPORT_BATCH
         ? `Importo… ${Math.min(i + IMPORT_BATCH, list.length)} di ${list.length}` : 'Importo…';
-      // Con poco segnale non si resta bloccati: dopo 90 s si può riprovare senza doppioni.
-      const { data } = await api('/api/cabinets/import', { method: 'POST', body: { cabinets: list.slice(i, i + IMPORT_BATCH) }, timeout: 90000 });
+      // Con poco segnale non si resta bloccati: dopo un tempo massimo si può riprovare senza
+      // doppioni. Il tempo cresce con i dati da inviare (almeno 1,5 KB al secondo).
+      const body = { cabinets: list.slice(i, i + IMPORT_BATCH) };
+      const { data } = await api('/api/cabinets/import', { method: 'POST', body, timeout: Math.max(90000, JSON.stringify(body).length / 1.5) });
       created += data.created;
       existing += data.existing;
       createdIds.push(...(data.ids || []));
@@ -2687,15 +2777,26 @@ $('#import-form').addEventListener('submit', async (e) => {
 });
 
 // Annulla l'ultima importazione: si tolgono le cabine appena create (non quelle già modificate).
+// A blocchi come l'importazione; se la connessione cade si può riprovare con quelle rimaste.
 async function undoImport(clientIds) {
+  let removed = 0;
+  let done = 0;
   try {
-    const { data } = await api('/api/cabinets/import/undo', { method: 'POST', body: { clientIds }, timeout: 90000 });
+    toast('Annullo l\'importazione…', false, 120000);
+    for (; done < clientIds.length; done += IMPORT_BATCH) {
+      const { data } = await api('/api/cabinets/import/undo', { method: 'POST', body: { clientIds: clientIds.slice(done, done + IMPORT_BATCH) }, timeout: 90000 });
+      removed += data.removed;
+    }
+    toast(removed === 1 ? 'Importazione annullata: tolta 1 cabina' : `Importazione annullata: tolte ${removed} cabine`, false, 5000);
+  } catch (err) {
+    const rest = clientIds.slice(done);
+    toastAction(err instanceof ApiError ? err.message : 'Non riesco ad annullare l\'importazione: controlla la connessione',
+      'Riprova', () => undoImport(rest), 30000);
+  }
+  if (removed) {
     state.localChanges += 1;
     state.etag = null;
-    toast(data.removed === 1 ? 'Importazione annullata: tolta 1 cabina' : `Importazione annullata: tolte ${data.removed} cabine`, false, 5000);
     await refresh();
-  } catch (err) {
-    toast(err instanceof ApiError ? err.message : 'Non riesco ad annullare: controlla la connessione e riprova dal menu', true, 6000);
   }
 }
 
@@ -2704,6 +2805,7 @@ async function undoImport(clientIds) {
 function goBack() {
   const dialog = document.querySelector('dialog[open]');
   if (dialog) {
+    if (dialog.id === 'form-dialog' && !formDiscardOk()) return true;
     if (!(dialog.id === 'import-dialog' && importState.busy)) dialog.close();
     return true;
   }

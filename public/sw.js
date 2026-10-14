@@ -6,7 +6,7 @@
 // solo insieme alla versione della cache: si prendono subito dal telefono.
 // Dati (/api), tile della mappa e percorsi non passano dalla cache.
 
-const CACHE = 'cabine-v8';
+const CACHE = 'cabine-v9';
 const NETWORK_TIMEOUT_MS = 4000;
 const SHELL = [
   './',

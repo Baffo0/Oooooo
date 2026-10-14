@@ -190,6 +190,13 @@ test('le cabine salvate da versioni precedenti funzionano', async () => {
   assert.deepEqual(logged.data.photos, []);
 });
 
+test('cabina di una versione precedente: la nota di un collega non blocca la modifica', async () => {
+  // Il telefono aveva la cabina di prima della nota (senza editedAt): manda il vecchio updatedAt.
+  const edit = await call('PUT', '/api/cabinets/vecchia', { body: { notes: 'Chiave dal portiere', baseUpdatedAt: '2024-01-01T00:00:00.000Z' } });
+  assert.equal(edit.status, 200);
+  assert.equal(edit.data.notes, 'Chiave dal portiere');
+});
+
 test('un indirizzo malformato non fa cadere il server', async () => {
   const { port } = server.address();
   const reply = await new Promise((resolve, reject) => {

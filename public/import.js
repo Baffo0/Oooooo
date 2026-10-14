@@ -18,20 +18,28 @@
   const TYPES = ['PFP', 'PFS', 'PTE', 'PCN', 'POZZETTO', 'MUFFOLA', 'ALTRO'];
   const STATUSES = ['da_fare', 'in_corso', 'fatto', 'problema'];
 
-  // Tipo scritto nel nome (anche dentro sigle come "NA_01_PFS_03"). Nei codici gerarchici
-  // (NA_01_PFP_02_PFS_05) vale la sigla più a destra; le parole contano solo senza sigle,
-  // perché "Pozzetto" può essere anche il nome di una via.
+  // Tipo scritto nel nome (anche dentro sigle come "NA_01_PFS_03"). Con più sigle vale la più
+  // specifica: in "NA_01_PFP_02_PFS_05" o "PTE 12 (PFS 3)" le altre indicano da dove arriva
+  // la fibra. Pozzetto e Muffola contano se il nome comincia così ("Pozzetto PFS 3"), le altre
+  // parole solo senza sigle, perché "Pozzetto" può essere anche il nome di una via.
   const TYPE_TOKENS = /(?:^|[^a-z])(pfp|pfs|pte|pcn|pop)(?=[^a-z]|$)/gi;
   const TOKEN_TYPES = { PFP: 'PFP', PFS: 'PFS', PTE: 'PTE', PCN: 'PCN', POP: 'PCN' };
   const TYPE_WORDS_RE = [['POZZETTO', /pozzett/i], ['MUFFOLA', /muffol/i]];
   // Sigle che indicano il tipo, non la zona: "PFS_12" non è un gruppo.
   const TYPE_WORDS = new Set(['PFP', 'PFS', 'PTE', 'PCN', 'POP', 'PZ', 'MF']);
 
+  const SPECIFIC = ['PTE', 'PFS', 'PFP', 'PCN'];
   function guessType(text) {
     if (!text) return null;
-    const tokens = [...String(text).matchAll(TYPE_TOKENS)];
-    if (tokens.length) return TOKEN_TYPES[tokens[tokens.length - 1][1].toUpperCase()];
-    for (const [type, re] of TYPE_WORDS_RE) if (re.test(text)) return type;
+    const s = String(text);
+    if (/^\W*pozzett/i.test(s)) return 'POZZETTO';
+    if (/^\W*muffol/i.test(s)) return 'MUFFOLA';
+    const types = (t) => [...t.matchAll(TYPE_TOKENS)].map((m) => TOKEN_TYPES[m[1].toUpperCase()]);
+    // Tra parentesi c'è di solito un riferimento: conta solo se fuori non c'è nessuna sigla.
+    let found = types(s.replace(/\([^)]*\)|\[[^\]]*\]/g, ' '));
+    if (!found.length) found = types(s);
+    if (found.length) return SPECIFIC.find((t) => found.includes(t));
+    for (const [type, re] of TYPE_WORDS_RE) if (re.test(s)) return type;
     return null;
   }
 
@@ -326,7 +334,7 @@
   const NAME_KEYS = ['name', 'nome', 'title', 'titolo', 'label', 'sigla'];
   const DESCRIPTION_KEYS = ['description', 'descrizione'];
   // Dati interni di questa app o stile della mappa: non sono informazioni sulla cabina.
-  const SKIP_PROPS = /^(id|clientId|photos|accuracy|createdBy|createdAt|updatedBy|updatedAt|log|styleUrl|styleHash|styleMapHash|marker-.*|stroke.*|fill.*|icon.*|visibility|tessellate|extrude|begin|end|timestamp|altitudeMode|drawOrder)$/i;
+  const SKIP_PROPS = /^(id|clientId|photos|accuracy|createdBy|createdAt|updatedBy|updatedAt|editedAt|pending|log|styleUrl|styleHash|styleMapHash|marker-.*|stroke.*|fill.*|icon.*|visibility|tessellate|extrude|begin|end|timestamp|altitudeMode|drawOrder)$/i;
 
   function parseGeoJson(text, fileName) {
     let json;
@@ -404,13 +412,17 @@
   const ADDRESS_KEYS = [/^(indirizzo|address|ubicazione|posizione)$/i, /indirizzo|address/i];
   const squash = (v) => String(v || '').replace(/\s+/g, ' ').trim();
 
-  // Esportazione di questa app (KML o GeoJSON): colonne codice, tipo e stato con i valori
-  // esatti dell'app. Una tabella di My Maps con colonne dai nomi simili non viene confusa.
-  function ownExport(fields) {
+  // Esportazione di questa app (KML o GeoJSON): colonne codice, tipo, stato, indirizzo e note
+  // (anche vuote) con i valori esatti dell'app, e come nome del punto il codice stesso. Una
+  // tabella di My Maps con colonne dai nomi simili non viene confusa (il nome lì è un altro).
+  function ownExport(fields, name) {
     const get = (...keys) => fields.find((f) => keys.includes(f.key));
+    const code = get('codice', 'code');
     const tipo = get('tipo', 'type');
     const stato = get('stato', 'status');
-    return Boolean(get('codice', 'code') && tipo && stato && TYPES.includes(tipo.value) && STATUSES.includes(stato.value));
+    return Boolean(code && tipo && stato && get('indirizzo', 'address') && get('note', 'notes')
+      && TYPES.includes(tipo.value) && STATUSES.includes(stato.value)
+      && (!name || !code.value || squash(code.value).toLowerCase() === name.toLowerCase()));
   }
 
   function makePoint({ name, description, fields, address, lat, lng, folder, log }) {
@@ -419,7 +431,7 @@
     fields = fields.map((f) => ({ ...f, value: clean(f.value) }));
     const used = new Set();
     const find = (re) => fields.find((x) => !used.has(x) && keyIs(re)(x));
-    const own = ownExport(fields);
+    const own = ownExport(fields, name);
 
     // Codice: il nome del punto. La colonna "codice" vale per l'esportazione dell'app o se il
     // nome manca; altrimenti, se diversa dal nome, resta nelle note.
@@ -457,9 +469,12 @@
     }
     if (addr) {
       const civico = find(/^(civico|n\.?|numero|n\.?\s*civico|numero civico)$/i);
-      if (civico && civico.value && !/\d/.test(addr)) {
+      if (civico && civico.value) {
+        // Già scritto nell'indirizzo se c'è come numero a sé: il 25 di "Via 25 Aprile" non conta.
+        const n = squash(civico.value);
+        const re = new RegExp(`(^|[^0-9a-z])${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![0-9a-z])(?!\\s+[a-zà-ù]{3,})`, 'i');
         used.add(civico);
-        addr += ` ${squash(civico.value)}`;
+        if (!re.test(addr)) addr += ` ${n}`;
       }
       const comune = find(/^(comune|citt[aà]|localit[aà])$/i);
       if (comune && comune.value) {
@@ -524,12 +539,16 @@
 
   // Sigla di zona nel nome, ovunque si trovi: "NA_01_PFS_03", "PFS NA-01 3", "NA 01", "NA.01",
   // "NA01PFS03", "NAPOLI_01". Le cifre restano come sono: NA_001 non è la zona NA_01.
+  // Abbreviazioni degli indirizzi ("SC 1" scala, "KM 12", "SP 7" strada provinciale): con lo
+  // spazio o il punto non sono zone. Scritte come NA_01 (SP_01 = La Spezia) invece sì.
+  const ADDRESS_WORDS = new Set(['SC', 'PAL', 'KM', 'SP', 'SS', 'SR', 'SN', 'INT', 'CIV', 'ED', 'NR', 'LOC', 'PIA', 'VIA']);
   function zoneTokens(name) {
     const out = [];
     const re = /(?:^|[^A-Za-z0-9])(?:([A-Za-z]{2,6})[_-]|([A-Z]{2,3})[ .]?|([A-Z]{4,6}))(\d{1,3})(?![0-9])/g;
     for (const m of String(name).matchAll(re)) {
       const letters = (m[1] || m[2] || m[3]).toUpperCase();
-      if (!TYPE_WORDS.has(letters)) out.push({ letters, digits: m[4].padStart(2, '0') });
+      if (TYPE_WORDS.has(letters) || (m[2] && ADDRESS_WORDS.has(letters))) continue;
+      out.push({ letters, digits: m[4].padStart(2, '0') });
     }
     return out;
   }
@@ -571,8 +590,8 @@
     const folders = new Set(points.map((p) => p.folder));
     const layers = folders.size > 1 ? countGroups(points, (p) => p.folder || 'Senza livello') : null;
 
-    // 2) le sigle di zona nei nomi (es. NA_01, CE_03). Con i livelli, una sigla vale come zona
-    // solo se raccoglie in media almeno 2 punti: i numeri progressivi delle cabine non sono zone.
+    // 2) le sigle di zona nei nomi (es. NA_01, CE_03). Una sigla vale come zona solo se raccoglie
+    // in media almeno 2 punti: i numeri progressivi delle cabine (NA_001, NA_002…) non sono zone.
     const tokens = new Map(points.map((p) => [p, zoneTokens(p.idName)]));
     const stats = new Map();
     for (const toks of tokens.values()) {
@@ -585,7 +604,7 @@
     }
     const zones = [...stats]
       .filter(([, st]) => st.points >= Math.max(2, points.length * 0.1) && st.numbers.size >= 2
-        && (!layers || st.points / st.numbers.size >= 2))
+        && st.points / st.numbers.size >= 2)
       .sort((a, b) => b[1].points / b[1].numbers.size - a[1].points / a[1].numbers.size)
       .map(([letters]) => letters);
     const zone = (p) => {

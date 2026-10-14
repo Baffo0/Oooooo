@@ -21,11 +21,13 @@
         android:theme="@style/Theme.CabineFibra"
         android:usesCleartextTraffic="true">
 
+        <!-- Niente launchMode singleTask: tornando dall'icona chiuderebbe fotocamera e scelta file
+             aperte sopra l'app. configChanges: tastiere Bluetooth, dimensione del testo e simili
+             non devono ricaricare la pagina (si perderebbe il modulo che si sta compilando). -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTask"
-            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|smallestScreenSize"
+            android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|smallestScreenSize|fontScale|density|layoutDirection|locale"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
