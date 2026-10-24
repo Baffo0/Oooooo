@@ -1,0 +1,443 @@
+<title>Vesuviana Napoli–Sorrento</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap">
+<style>
+/* Layout: una sola colonna come lo schema di linea sui pannelli di stazione — linea verticale, fermate in ordine da Napoli a Sorrento */
+:root {
+  --bg: #f3f5f7;
+  --surface: #ffffff;
+  --fg: #16212b;
+  --muted: #5b6a78;
+  --line: #0a6bb3;        /* blu linea */
+  --line-soft: #d6e6f3;
+  --board: #1c2630;       /* pannello partenze */
+  --board-fg: #ffc82e;    /* giallo tabellone */
+  --border: #dde3e9;
+  --warn: #9a5b00;
+  --warn-bg: #fff3dc;
+  --ok: #1d7a46;
+  --font-display: "Barlow Condensed", "Arial Narrow", "Roboto Condensed", sans-serif;
+  --font-body: "Barlow", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f151b; --surface: #17202a; --fg: #e8eef3; --muted: #95a4b2;
+    --line: #4aa3e6; --line-soft: #1e3347; --board: #0a0f14; --board-fg: #ffd04d;
+    --border: #26323e; --warn: #f0b45a; --warn-bg: #2d2311; --ok: #5cc98b;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f151b; --surface: #17202a; --fg: #e8eef3; --muted: #95a4b2;
+  --line: #4aa3e6; --line-soft: #1e3347; --board: #0a0f14; --board-fg: #ffd04d;
+  --border: #26323e; --warn: #f0b45a; --warn-bg: #2d2311; --ok: #5cc98b;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--fg);
+  font-family: var(--font-body); font-size: 16px; line-height: 1.45;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 48px;
+}
+.wrap { max-width: 640px; margin: 0 auto; }
+a { color: var(--line); }
+button, input { font: inherit; color: inherit; }
+:focus-visible { outline: 3px solid var(--line); outline-offset: 2px; }
+
+/* Testata a forma di tabellone */
+.board {
+  background: var(--board); color: #fff;
+  margin: 16px 0 0; border-radius: 10px; padding: 18px 18px 16px;
+  display: grid; gap: 6px;
+}
+.board .eyebrow {
+  font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em;
+  color: var(--board-fg); text-transform: uppercase;
+  display: flex; justify-content: space-between; gap: 12px;
+}
+.board h1 {
+  font-family: var(--font-display); font-weight: 700; font-size: 34px; line-height: 1.05;
+  margin: 0; letter-spacing: .01em; text-wrap: balance; text-transform: uppercase;
+}
+.board p { margin: 0; color: #c3ccd5; font-size: 15px; }
+#clock { font-variant-numeric: tabular-nums; }
+
+/* Barra strumenti */
+.tools { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--bg); padding-block: 12px 10px; display: grid; gap: 10px; }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--bg); }
+.search { position: relative; }
+#q {
+  width: 100%; padding: 12px 14px 12px 40px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--surface); font-size: 17px;
+}
+.search svg { position: absolute; left: 13px; top: 50%; transform: translateY(-50%); color: var(--muted); }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.chip {
+  border: 1px solid var(--border); background: var(--surface); border-radius: 999px;
+  padding: 6px 12px; font-size: 14px; cursor: pointer; color: var(--muted);
+}
+.chip[aria-pressed="true"] { background: var(--line); border-color: var(--line); color: #fff; }
+
+/* Preferite */
+#favs { display: grid; gap: 8px; margin-top: 4px; }
+#favs h2, .section-title {
+  font-family: var(--font-display); font-weight: 600; font-size: 15px; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--muted); margin: 8px 0 0;
+}
+.fav-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.fav {
+  display: inline-flex; align-items: center; gap: 6px; padding: 10px 14px; border-radius: 10px;
+  background: var(--surface); border: 1px solid var(--border); text-decoration: none; color: var(--fg);
+  font-family: var(--font-display); font-weight: 600; font-size: 18px; text-transform: uppercase;
+}
+
+/* Schema di linea */
+.line { list-style: none; margin: 8px 0 0; padding: 0; position: relative; }
+.stop { position: relative; display: grid; grid-template-columns: 34px 1fr auto; align-items: stretch; }
+.rail { position: relative; }
+.rail::before { content: ""; position: absolute; left: 14px; width: 6px; top: 0; bottom: 0; background: var(--line); }
+.stop:first-child .rail::before { top: 50%; }
+.stop:last-child .rail::before { bottom: 50%; }
+.rail::after {
+  content: ""; position: absolute; left: 8px; top: 50%; width: 18px; height: 18px; margin-top: -9px;
+  border-radius: 50%; background: var(--surface); border: 4px solid var(--line);
+}
+.stop.major .rail::after { width: 22px; height: 22px; left: 6px; margin-top: -11px; border-width: 5px; }
+.stop.filtered .rail::before { background: var(--line-soft); }
+.go {
+  display: flex; flex-direction: column; justify-content: center; gap: 2px;
+  padding: 12px 8px 12px 6px; text-decoration: none; color: var(--fg); min-width: 0;
+  border-bottom: 1px solid var(--border); cursor: pointer; background: none; border-top: 0; border-left: 0; border-right: 0; text-align: left;
+}
+.go:hover .name { color: var(--line); }
+.name {
+  font-family: var(--font-display); font-weight: 600; font-size: 21px; line-height: 1.1;
+  text-transform: uppercase; letter-spacing: .01em; overflow-wrap: anywhere;
+}
+.stop.major .name { font-weight: 700; font-size: 23px; }
+.meta { font-size: 13px; color: var(--muted); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.tag { font-family: var(--font-mono); font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--line-soft); color: var(--fg); }
+.tag.todo { background: var(--warn-bg); color: var(--warn); }
+.side { display: flex; align-items: center; gap: 2px; border-bottom: 1px solid var(--border); }
+.icon-btn {
+  width: 42px; height: 42px; border-radius: 8px; border: 0; background: none; cursor: pointer;
+  display: grid; place-items: center; color: var(--muted);
+}
+.icon-btn:hover { background: var(--line-soft); color: var(--fg); }
+.icon-btn[aria-pressed="true"] { color: #e0a100; }
+.empty { color: var(--muted); padding: 24px 0; text-align: center; }
+
+.note {
+  margin-top: 28px; padding: 14px 16px; border-radius: 10px; background: var(--surface);
+  border: 1px solid var(--border); font-size: 15px; color: var(--muted); display: grid; gap: 8px;
+}
+.note b { color: var(--fg); }
+.note .row { display: flex; gap: 8px; flex-wrap: wrap; }
+.btn {
+  border: 1px solid var(--border); background: var(--surface); border-radius: 8px; padding: 8px 12px;
+  cursor: pointer; font-size: 15px; text-decoration: none; color: var(--fg); display: inline-flex; align-items: center; gap: 6px;
+}
+.btn.primary { background: var(--line); border-color: var(--line); color: #fff; }
+
+/* Pannello impostazione ID */
+.sheet-bg { position: fixed; inset: 0; background: rgba(5,10,15,.55); z-index: 20; display: grid; align-items: end; justify-items: center; }
+.sheet {
+  width: 100%; max-width: 640px; background: var(--surface); border-radius: 14px 14px 0 0;
+  padding: 18px max(18px, env(safe-area-inset-right, 0px)) calc(20px + env(safe-area-inset-bottom, 0px)) max(18px, env(safe-area-inset-left, 0px));
+  display: grid; gap: 14px; max-height: 92%; overflow: auto;
+}
+.sheet h3 { margin: 0; font-family: var(--font-display); font-size: 26px; text-transform: uppercase; }
+.sheet ol { margin: 0; padding-left: 20px; display: grid; gap: 6px; color: var(--muted); font-size: 15px; }
+.stepper { display: grid; grid-template-columns: 48px 1fr 48px; gap: 8px; align-items: center; }
+.stepper button { height: 48px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); font-size: 22px; cursor: pointer; }
+#idInput {
+  height: 48px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg);
+  text-align: center; font-family: var(--font-mono); font-size: 18px; width: 100%; min-width: 0;
+}
+.sheet .row { display: flex; gap: 8px; flex-wrap: wrap; }
+.sheet .row > * { flex: 1 1 140px; justify-content: center; }
+.small { font-size: 13px; color: var(--muted); }
+#cfgText { width: 100%; font-family: var(--font-mono); font-size: 13px; padding: 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); min-height: 70px; }
+.toast { position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--board); color: #fff; padding: 10px 16px; border-radius: 8px; z-index: 30; font-size: 15px; }
+@media (prefers-reduced-motion: no-preference) { .go, .icon-btn, .chip { transition: background .15s, color .15s; } }
+</style>
+
+<div class="wrap">
+  <header class="board">
+    <div class="eyebrow"><span>Linea Napoli – Sorrento · Castellammare</span><span id="clock">--:--</span></div>
+    <h1>Orari in tempo reale</h1>
+    <p>Tocca una fermata per aprire il tabellone partenze EAV di quella stazione.</p>
+  </header>
+
+  <div class="tools">
+    <div class="search">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="q" type="search" placeholder="Cerca fermata (es. Vico, Ercolano)" autocomplete="off" aria-label="Cerca fermata">
+    </div>
+    <div class="chips" role="group" aria-label="Tratta">
+      <button class="chip" data-seg="all" aria-pressed="true">Tutte</button>
+      <button class="chip" data-seg="napoli">Napoli – Torre del Greco</button>
+      <button class="chip" data-seg="vesuvio">Torre – Castellammare</button>
+      <button class="chip" data-seg="penisola">Penisola sorrentina</button>
+    </div>
+  </div>
+
+  <section id="favs" hidden>
+    <h2>Le tue fermate</h2>
+    <div class="fav-row" id="favRow"></div>
+  </section>
+
+  <h2 class="section-title">Napoli Porta Nolana → Sorrento</h2>
+  <ol class="line" id="line"></ol>
+  <p class="empty" id="empty" hidden>Nessuna fermata trovata.</p>
+
+  <div class="note">
+    <div><b>Come funziona.</b> Ogni fermata apre il teleindicatore ufficiale EAV (<span class="tag">orariotreni.eavsrl.it</span>) con partenze, binario e ritardo. Le fermate con l'etichetta <span class="tag todo">ID da impostare</span> aprono l'elenco EAV: scegli lì la stazione, poi copia il link della pagina e incollalo con il tasto ingranaggio. Da quel momento la fermata si apre direttamente.</div>
+    <div class="row">
+      <a class="btn" href="https://orariotreni.eavsrl.it/teleindicatori/" target="_blank" rel="noopener">Elenco stazioni EAV</a>
+      <a class="btn" href="https://www.eavsrl.it/orari-linee-ferroviarie/" target="_blank" rel="noopener">Orario ufficiale L1</a>
+      <button class="btn" id="cfgBtn" type="button">Backup impostazioni</button>
+    </div>
+  </div>
+</div>
+
+<div class="sheet-bg" id="sheetBg" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+    <h3 id="sheetTitle">Fermata</h3>
+    <div id="idPane">
+      <ol>
+        <li>Apri l'<a href="https://orariotreni.eavsrl.it/teleindicatori/" target="_blank" rel="noopener">elenco stazioni EAV</a>, scegli la linea e questa fermata.</li>
+        <li>Copia l'indirizzo della pagina (finisce con <span class="tag">?stazione=numero</span>) e incollalo qui sotto, oppure scrivi solo il numero.</li>
+        <li>Con <b>Prova</b> controlli che il tabellone mostri il nome giusto, poi <b>Salva</b>.</li>
+      </ol>
+      <div class="stepper" style="margin-top:14px">
+        <button type="button" id="idMinus" aria-label="Numero precedente">−</button>
+        <input id="idInput" inputmode="numeric" placeholder="numero o link" aria-label="Numero stazione EAV o link">
+        <button type="button" id="idPlus" aria-label="Numero successivo">+</button>
+      </div>
+      <p class="small" id="idHint"></p>
+      <div class="row">
+        <a class="btn" id="idTry" href="#" target="_blank" rel="noopener">Prova</a>
+        <button class="btn primary" type="button" id="idSave">Salva</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button class="btn" type="button" id="idReset">Ripristina predefinito</button>
+        <button class="btn" type="button" id="idClose">Chiudi</button>
+      </div>
+    </div>
+    <div id="cfgPane" hidden>
+      <p class="small">Copia questo testo per salvare i numeri delle fermate che hai impostato, oppure incolla qui un backup e premi <b>Importa</b>.</p>
+      <textarea id="cfgText" spellcheck="false" aria-label="Backup impostazioni"></textarea>
+      <div class="row">
+        <button class="btn" type="button" id="cfgCopy">Copia</button>
+        <button class="btn primary" type="button" id="cfgImport">Importa</button>
+        <button class="btn" type="button" id="cfgClose">Chiudi</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// Teleindicatori EAV: https://orariotreni.eavsrl.it/teleindicatori/?stazione=<id>
+// id: numero stazione EAV verificato; null = da impostare dall'utente.
+const EAV_BOARD = "https://orariotreni.eavsrl.it/teleindicatori/";
+const STOPS = [
+  { key: "porta-nolana",       name: "Napoli Porta Nolana",          seg: "napoli",   id: null, major: true, alt: "napoli capolinea" },
+  { key: "garibaldi",          name: "Napoli Piazza Garibaldi",      seg: "napoli",   id: null, major: true, alt: "stazione centrale" },
+  { key: "gianturco",          name: "Via Gianturco",                seg: "napoli",   id: null },
+  { key: "san-giovanni",       name: "San Giovanni a Teduccio",      seg: "napoli",   id: null },
+  { key: "barra",              name: "Barra",                        seg: "napoli",   id: null },
+  { key: "santa-maria-pozzo",  name: "Santa Maria del Pozzo",        seg: "napoli",   id: null },
+  { key: "san-giorgio",        name: "San Giorgio a Cremano",        seg: "napoli",   id: null },
+  { key: "cavalli-bronzo",     name: "San Giorgio Cavalli di Bronzo",seg: "napoli",   id: null },
+  { key: "bellavista",         name: "Portici Bellavista",           seg: "napoli",   id: null },
+  { key: "portici-liberta",    name: "Portici Via Libertà",          seg: "napoli",   id: null },
+  { key: "ercolano-scavi",     name: "Ercolano Scavi",               seg: "napoli",   id: null, major: true },
+  { key: "miglio-oro",         name: "Ercolano Miglio d'Oro",        seg: "napoli",   id: null },
+  { key: "torre-greco",        name: "Torre del Greco",              seg: "napoli",   id: null, major: true },
+  { key: "via-monte",          name: "Via del Monte",                seg: "vesuvio",  id: null },
+  { key: "via-santantonio",    name: "Via Sant'Antonio",             seg: "vesuvio",  id: null },
+  { key: "villa-ginestre",     name: "Villa delle Ginestre",         seg: "vesuvio",  id: null },
+  { key: "leopardi",           name: "Leopardi",                     seg: "vesuvio",  id: null },
+  { key: "trecase",            name: "Trecase",                      seg: "vesuvio",  id: null },
+  { key: "oplonti",            name: "Torre Annunziata Oplonti",     seg: "vesuvio",  id: 41,   major: true },
+  { key: "pompei-scavi",       name: "Pompei Scavi Villa dei Misteri", seg: "vesuvio", id: null, major: true },
+  { key: "moregine",           name: "Moregine",                     seg: "vesuvio",  id: null },
+  { key: "ponte-persica",      name: "Ponte Persica",                seg: "vesuvio",  id: null },
+  { key: "pioppaino",          name: "Pioppaino",                    seg: "vesuvio",  id: null },
+  { key: "via-nocera",         name: "Via Nocera",                   seg: "vesuvio",  id: null },
+  { key: "castellammare",      name: "Castellammare di Stabia",      seg: "vesuvio",  id: null, major: true },
+  { key: "pozzano",            name: "Pozzano",                      seg: "penisola", id: null },
+  { key: "scrajo",             name: "Scrajo Terme",                 seg: "penisola", id: null },
+  { key: "vico-equense",       name: "Vico Equense",                 seg: "penisola", id: null, major: true },
+  { key: "seiano",             name: "Seiano",                       seg: "penisola", id: null },
+  { key: "meta",               name: "Meta",                         seg: "penisola", id: null },
+  { key: "piano",              name: "Piano di Sorrento",            seg: "penisola", id: null },
+  { key: "santagnello",        name: "Sant'Agnello",                 seg: "penisola", id: null },
+  { key: "sorrento",           name: "Sorrento",                     seg: "penisola", id: null, major: true, alt: "capolinea" },
+];
+
+const LS_IDS = "vesuviana.ids", LS_FAV = "vesuviana.favs", LS_SEG = "vesuviana.seg";
+function load(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } }
+function save(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+
+let userIds = load(LS_IDS, {});
+let favs = load(LS_FAV, []);
+let seg = load(LS_SEG, "all");
+
+const idOf = s => userIds[s.key] ?? s.id;
+const urlOf = s => { const id = idOf(s); return id ? `${EAV_BOARD}?stazione=${id}` : EAV_BOARD; };
+const norm = t => t.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9 ]/g, " ");
+
+const STAR = '<svg width="22" height="22" viewBox="0 0 24 24" fill="FILL" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/></svg>';
+const GEAR = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>';
+
+const $ = s => document.querySelector(s);
+const lineEl = $("#line");
+
+function render() {
+  const q = norm($("#q").value.trim());
+  let shown = 0;
+  lineEl.innerHTML = "";
+  STOPS.forEach(s => {
+    const match = (seg === "all" || s.seg === seg) && (!q || norm(s.name + " " + (s.alt || "")).includes(q));
+    if (!match) return;
+    shown++;
+    const id = idOf(s), fav = favs.includes(s.key);
+    const li = document.createElement("li");
+    li.className = "stop" + (s.major ? " major" : "") + (q || seg !== "all" ? " filtered" : "");
+    li.innerHTML = `
+      <div class="rail" aria-hidden="true"></div>
+      <a class="go" href="${urlOf(s)}" target="_blank" rel="noopener">
+        <span class="name"></span>
+        <span class="meta">${id
+          ? `<span class="tag">stazione ${id}</span>${userIds[s.key] != null ? "<span>impostato da te</span>" : ""}`
+          : `<span class="tag todo">ID da impostare</span><span>apre l'elenco EAV</span>`}</span>
+      </a>
+      <div class="side">
+        <button class="icon-btn" data-fav="${s.key}" aria-pressed="${fav}" aria-label="${fav ? "Togli dalle" : "Aggiungi alle"} fermate preferite">${STAR.replace("FILL", fav ? "currentColor" : "none")}</button>
+        <button class="icon-btn" data-set="${s.key}" aria-label="Imposta numero stazione">${GEAR}</button>
+      </div>`;
+    li.querySelector(".name").textContent = s.name;
+    lineEl.appendChild(li);
+  });
+  $("#empty").hidden = shown > 0;
+  document.querySelectorAll(".chip").forEach(c => c.setAttribute("aria-pressed", String(c.dataset.seg === seg)));
+
+  const favStops = STOPS.filter(s => favs.includes(s.key));
+  $("#favs").hidden = favStops.length === 0;
+  $("#favRow").innerHTML = "";
+  favStops.forEach(s => {
+    const a = document.createElement("a");
+    a.className = "fav"; a.href = urlOf(s); a.target = "_blank"; a.rel = "noopener";
+    a.textContent = s.name;
+    $("#favRow").appendChild(a);
+  });
+}
+
+$("#q").addEventListener("input", render);
+document.querySelectorAll(".chip").forEach(c => c.addEventListener("click", () => { seg = c.dataset.seg; save(LS_SEG, seg); render(); }));
+lineEl.addEventListener("click", e => {
+  const f = e.target.closest("[data-fav]");
+  if (f) {
+    const k = f.dataset.fav;
+    favs = favs.includes(k) ? favs.filter(x => x !== k) : [...favs, k];
+    save(LS_FAV, favs); render(); return;
+  }
+  const g = e.target.closest("[data-set]");
+  if (g) openSheet(STOPS.find(s => s.key === g.dataset.set));
+});
+
+// Pannello: imposta il numero stazione
+let current = null;
+function parseId(v) {
+  v = String(v).trim();
+  const m = v.match(/stazione=(\d+)/i) || v.match(/^(\d+)$/);
+  return m ? Number(m[1]) : null;
+}
+function syncTry() {
+  const id = parseId($("#idInput").value);
+  $("#idTry").href = id ? `${EAV_BOARD}?stazione=${id}` : EAV_BOARD;
+  $("#idHint").textContent = id
+    ? `Prova apre la stazione n. ${id}: controlla che il titolo del tabellone sia ${current.name.toUpperCase()}.`
+    : "Nessun numero: Prova apre l'elenco stazioni EAV.";
+}
+function openSheet(s) {
+  current = s;
+  $("#sheetTitle").textContent = s.name;
+  $("#idPane").hidden = false; $("#cfgPane").hidden = true;
+  $("#idInput").value = idOf(s) ?? "";
+  $("#idReset").hidden = userIds[s.key] == null;
+  syncTry();
+  $("#sheetBg").hidden = false;
+  $("#idInput").focus();
+}
+function closeSheet() { $("#sheetBg").hidden = true; }
+function step(d) {
+  const id = parseId($("#idInput").value) ?? 0;
+  $("#idInput").value = Math.max(1, id + d);
+  syncTry();
+}
+$("#idInput").addEventListener("input", syncTry);
+$("#idInput").addEventListener("paste", () => setTimeout(() => {
+  const id = parseId($("#idInput").value); if (id) $("#idInput").value = id; syncTry();
+}));
+$("#idMinus").addEventListener("click", () => step(-1));
+$("#idPlus").addEventListener("click", () => step(1));
+$("#idSave").addEventListener("click", () => {
+  const id = parseId($("#idInput").value);
+  if (!id) { toast("Scrivi un numero o incolla il link della stazione"); return; }
+  userIds[current.key] = id; save(LS_IDS, userIds);
+  closeSheet(); render(); toast(`${current.name}: salvata stazione ${id}`);
+});
+$("#idReset").addEventListener("click", () => {
+  delete userIds[current.key]; save(LS_IDS, userIds);
+  closeSheet(); render(); toast(`${current.name}: ripristinato`);
+});
+$("#idClose").addEventListener("click", closeSheet);
+$("#sheetBg").addEventListener("click", e => { if (e.target.id === "sheetBg") closeSheet(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeSheet(); });
+
+// Backup
+$("#cfgBtn").addEventListener("click", () => {
+  $("#sheetTitle").textContent = "Backup impostazioni";
+  $("#idPane").hidden = true; $("#cfgPane").hidden = false;
+  $("#cfgText").value = JSON.stringify({ ids: userIds, favs });
+  $("#sheetBg").hidden = false;
+});
+$("#cfgCopy").addEventListener("click", () => {
+  const t = $("#cfgText");
+  navigator.clipboard.writeText(t.value).then(() => toast("Copiato"), () => { t.select(); toast("Seleziona e copia il testo"); });
+});
+$("#cfgImport").addEventListener("click", () => {
+  try {
+    const d = JSON.parse($("#cfgText").value);
+    const known = new Set(STOPS.map(s => s.key));
+    userIds = Object.fromEntries(Object.entries(d.ids || {}).filter(([k, v]) => known.has(k) && Number.isInteger(v) && v > 0));
+    favs = (d.favs || []).filter(k => known.has(k));
+    save(LS_IDS, userIds); save(LS_FAV, favs);
+    closeSheet(); render(); toast("Impostazioni importate");
+  } catch { toast("Testo non valido: incolla il backup completo"); }
+});
+$("#cfgClose").addEventListener("click", closeSheet);
+
+let toastTimer;
+function toast(msg) {
+  let t = document.querySelector(".toast");
+  if (!t) { t = document.createElement("div"); t.className = "toast"; t.setAttribute("role", "status"); document.body.appendChild(t); }
+  t.textContent = msg; t.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 2600);
+}
+
+function tick() {
+  const d = new Date();
+  $("#clock").textContent = d.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Rome" });
+}
+tick(); setInterval(tick, 15000);
+render();
+</script>
