@@ -197,7 +197,7 @@ body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-a
   <p class="empty" id="empty" hidden>Nessuna fermata trovata.</p>
 
   <div class="note">
-    <div><b>Come funziona.</b> Ogni fermata apre il teleindicatore ufficiale EAV (<span class="tag">orariotreni.eavsrl.it</span>) con partenze, binario e ritardo. Le fermate con l'etichetta <span class="tag todo">ID da impostare</span> aprono l'elenco EAV: scegli lì la stazione, poi copia il link della pagina e incollalo con il tasto ingranaggio. Da quel momento la fermata si apre direttamente.</div>
+    <div><b>Come funziona.</b> Ogni fermata apre il teleindicatore ufficiale EAV (<span class="tag">orariotreni.eavsrl.it</span>) con partenze, binario e ritardo. Per le fermate con l'etichetta <span class="tag todo">ID da impostare</span> il numero EAV non è ancora noto: toccandole si apre un numero stimato. Premi <b>Prova</b>: se il tabellone porta il nome giusto premi <b>Salva</b>, altrimenti cambia numero con − e + e riprova. Da quel momento la fermata si apre direttamente.</div>
     <div class="row">
       <a class="btn" href="https://orariotreni.eavsrl.it/" target="_blank" rel="noopener">Elenco stazioni EAV</a>
       <a class="btn" href="https://www.eavsrl.it/orari-linee-ferroviarie/" target="_blank" rel="noopener">Orario ufficiale L1</a>
@@ -260,9 +260,9 @@ const STOPS = [
   { key: "portici-liberta",    name: "Portici Via Libertà",          seg: "napoli",   id: null },
   { key: "ercolano-scavi",     name: "Ercolano Scavi",               seg: "napoli",   id: null, major: true },
   { key: "miglio-oro",         name: "Ercolano Miglio d'Oro",        seg: "napoli",   id: null },
-  { key: "torre-greco",        name: "Torre del Greco",              seg: "napoli",   id: null, major: true },
-  { key: "via-monte",          name: "Via del Monte",                seg: "vesuvio",  id: null },
+  { key: "torre-greco",        name: "Torre del Greco",              seg: "napoli",   id: 33,   major: true },
   { key: "via-santantonio",    name: "Via Sant'Antonio",             seg: "vesuvio",  id: null },
+  { key: "via-monte",          name: "Via del Monte",                seg: "vesuvio",  id: null },
   { key: "villa-ginestre",     name: "Villa delle Ginestre",         seg: "vesuvio",  id: null },
   { key: "leopardi",           name: "Leopardi",                     seg: "vesuvio",  id: null },
   { key: "trecase",            name: "Trecase",                      seg: "vesuvio",  id: null },
@@ -314,11 +314,11 @@ function render() {
     li.className = "stop" + (s.major ? " major" : "") + (q || seg !== "all" ? " filtered" : "");
     li.innerHTML = `
       <div class="rail" aria-hidden="true"></div>
-      <a class="go" href="${urlOf(s)}" target="_blank" rel="noopener">
+      <a class="go" href="${urlOf(s)}" target="_blank" rel="noopener"${id ? "" : ` data-set="${s.key}"`}>
         <span class="name"></span>
         <span class="meta">${id
           ? `<span class="tag">stazione ${id}</span>${userIds[s.key] != null ? "<span>impostato da te</span>" : ""}`
-          : `<span class="tag todo">ID da impostare</span><span>apre l'elenco EAV</span>`}</span>
+          : `<span class="tag todo">ID da impostare</span><span>tocca per trovarlo</span>`}</span>
       </a>
       <div class="side">
         <button class="icon-btn" data-fav="${s.key}" aria-pressed="${fav}" aria-label="${fav ? "Togli dalle" : "Aggiungi alle"} fermate preferite">${STAR.replace("FILL", fav ? "currentColor" : "none")}</button>
@@ -351,6 +351,7 @@ lineEl.addEventListener("click", e => {
     save(LS_FAV, favs); render(); return;
   }
   const g = e.target.closest("[data-set]");
+  if (g) e.preventDefault();
   if (g) openSheet(STOPS.find(s => s.key === g.dataset.set));
 });
 
@@ -372,11 +373,21 @@ function openSheet(s) {
   current = s;
   $("#sheetTitle").textContent = s.name;
   $("#idPane").hidden = false; $("#cfgPane").hidden = true;
-  $("#idInput").value = idOf(s) ?? "";
+  $("#idInput").value = idOf(s) ?? estimate(s) ?? "";
   $("#idReset").hidden = userIds[s.key] == null;
   syncTry();
   $("#sheetBg").hidden = false;
   $("#idInput").focus();
+}
+// Stima dal vicino più prossimo con numero noto (i numeri EAV seguono in parte l'ordine di linea): va sempre verificata con Prova.
+function estimate(s) {
+  const i = STOPS.indexOf(s);
+  for (let d = 1; d < STOPS.length; d++) {
+    const a = STOPS[i - d], b = STOPS[i + d];
+    if (a && idOf(a)) return idOf(a) + d;
+    if (b && idOf(b) && idOf(b) - d > 0) return idOf(b) - d;
+  }
+  return null;
 }
 function closeSheet() { $("#sheetBg").hidden = true; }
 function step(d) {
