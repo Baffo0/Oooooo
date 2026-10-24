@@ -199,7 +199,7 @@ body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-a
   <div class="note">
     <div><b>Come funziona.</b> Ogni fermata apre il teleindicatore ufficiale EAV (<span class="tag">orariotreni.eavsrl.it</span>) con partenze, binario e ritardo. Le fermate con l'etichetta <span class="tag todo">ID da impostare</span> aprono l'elenco EAV: scegli lì la stazione, poi copia il link della pagina e incollalo con il tasto ingranaggio. Da quel momento la fermata si apre direttamente.</div>
     <div class="row">
-      <a class="btn" href="https://orariotreni.eavsrl.it/teleindicatori/" target="_blank" rel="noopener">Elenco stazioni EAV</a>
+      <a class="btn" href="https://orariotreni.eavsrl.it/" target="_blank" rel="noopener">Elenco stazioni EAV</a>
       <a class="btn" href="https://www.eavsrl.it/orari-linee-ferroviarie/" target="_blank" rel="noopener">Orario ufficiale L1</a>
       <button class="btn" id="cfgBtn" type="button">Backup impostazioni</button>
     </div>
@@ -211,7 +211,7 @@ body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-a
     <h3 id="sheetTitle">Fermata</h3>
     <div id="idPane">
       <ol>
-        <li>Apri l'<a href="https://orariotreni.eavsrl.it/teleindicatori/" target="_blank" rel="noopener">elenco stazioni EAV</a>, scegli la linea e questa fermata.</li>
+        <li>Apri l'<a href="https://orariotreni.eavsrl.it/" target="_blank" rel="noopener">elenco stazioni EAV</a>, scegli la linea e questa fermata.</li>
         <li>Copia l'indirizzo della pagina (finisce con <span class="tag">?stazione=numero</span>) e incollalo qui sotto, oppure scrivi solo il numero.</li>
         <li>Con <b>Prova</b> controlli che il tabellone mostri il nome giusto, poi <b>Salva</b>.</li>
       </ol>
@@ -246,6 +246,7 @@ body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-a
 // Teleindicatori EAV: https://orariotreni.eavsrl.it/teleindicatori/?stazione=<id>
 // id: numero stazione EAV verificato; null = da impostare dall'utente.
 const EAV_BOARD = "https://orariotreni.eavsrl.it/teleindicatori/";
+const EAV_HOME = "https://orariotreni.eavsrl.it/"; // scelta linea e stazione
 const STOPS = [
   { key: "porta-nolana",       name: "Napoli Porta Nolana",          seg: "napoli",   id: null, major: true, alt: "napoli capolinea" },
   { key: "garibaldi",          name: "Napoli Piazza Garibaldi",      seg: "napoli",   id: null, major: true, alt: "stazione centrale" },
@@ -291,7 +292,7 @@ let favs = load(LS_FAV, []);
 let seg = load(LS_SEG, "all");
 
 const idOf = s => userIds[s.key] ?? s.id;
-const urlOf = s => { const id = idOf(s); return id ? `${EAV_BOARD}?stazione=${id}` : EAV_BOARD; };
+const urlOf = s => { const id = idOf(s); return id ? `${EAV_BOARD}?stazione=${id}` : EAV_HOME; };
 const norm = t => t.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9 ]/g, " ");
 
 const STAR = '<svg width="22" height="22" viewBox="0 0 24 24" fill="FILL" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/></svg>';
@@ -362,7 +363,7 @@ function parseId(v) {
 }
 function syncTry() {
   const id = parseId($("#idInput").value);
-  $("#idTry").href = id ? `${EAV_BOARD}?stazione=${id}` : EAV_BOARD;
+  $("#idTry").href = id ? `${EAV_BOARD}?stazione=${id}` : EAV_HOME;
   $("#idHint").textContent = id
     ? `Prova apre la stazione n. ${id}: controlla che il titolo del tabellone sia ${current.name.toUpperCase()}.`
     : "Nessun numero: Prova apre l'elenco stazioni EAV.";
