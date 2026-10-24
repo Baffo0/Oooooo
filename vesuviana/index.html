@@ -244,11 +244,12 @@ body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-a
 
 <script>
 // Teleindicatori EAV: https://orariotreni.eavsrl.it/teleindicatori/?stazione=<id>
-// id: numero stazione EAV verificato; null = da impostare dall'utente.
+// id: numero stazione EAV verificato; guess: numero probabile ricavato dall'ordine di linea (da verificare);
+// null = da impostare dall'utente.
 const EAV_BOARD = "https://orariotreni.eavsrl.it/teleindicatori/";
 const EAV_HOME = "https://orariotreni.eavsrl.it/"; // scelta linea e stazione
 const STOPS = [
-  { key: "porta-nolana",       name: "Napoli Porta Nolana",          seg: "napoli",   id: null, major: true, alt: "napoli capolinea" },
+  { key: "porta-nolana",       name: "Napoli Porta Nolana",          seg: "napoli",   id: 1,   major: true, alt: "napoli capolinea" },
   { key: "garibaldi",          name: "Napoli Piazza Garibaldi",      seg: "napoli",   id: null, major: true, alt: "stazione centrale" },
   { key: "gianturco",          name: "Via Gianturco",                seg: "napoli",   id: null },
   { key: "san-giovanni",       name: "San Giovanni a Teduccio",      seg: "napoli",   id: null },
@@ -261,18 +262,18 @@ const STOPS = [
   { key: "ercolano-scavi",     name: "Ercolano Scavi",               seg: "napoli",   id: null, major: true },
   { key: "miglio-oro",         name: "Ercolano Miglio d'Oro",        seg: "napoli",   id: null },
   { key: "torre-greco",        name: "Torre del Greco",              seg: "napoli",   id: 33,   major: true },
-  { key: "via-santantonio",    name: "Via Sant'Antonio",             seg: "vesuvio",  id: null },
-  { key: "via-monte",          name: "Via del Monte",                seg: "vesuvio",  id: null },
-  { key: "villa-ginestre",     name: "Villa delle Ginestre",         seg: "vesuvio",  id: null },
-  { key: "leopardi",           name: "Leopardi",                     seg: "vesuvio",  id: null },
-  { key: "trecase",            name: "Trecase",                      seg: "vesuvio",  id: null },
+  { key: "via-santantonio",    name: "Via Sant'Antonio",             seg: "vesuvio",  id: null, guess: 34 },
+  { key: "via-monte",          name: "Via del Monte",                seg: "vesuvio",  id: null, guess: 35 },
+  { key: "villa-ginestre",     name: "Villa delle Ginestre",         seg: "vesuvio",  id: null, guess: 36 },
+  { key: "leopardi",           name: "Leopardi",                     seg: "vesuvio",  id: null, guess: 37 },
+  { key: "trecase",            name: "Trecase",                      seg: "vesuvio",  id: null, guess: 38 },
   { key: "oplonti",            name: "Torre Annunziata Oplonti",     seg: "vesuvio",  id: 41,   major: true },
-  { key: "pompei-scavi",       name: "Pompei Scavi Villa dei Misteri", seg: "vesuvio", id: null, major: true },
+  { key: "pompei-scavi",       name: "Pompei Scavi Villa dei Misteri", seg: "vesuvio", id: 49,   major: true },
   { key: "moregine",           name: "Moregine",                     seg: "vesuvio",  id: null },
-  { key: "ponte-persica",      name: "Ponte Persica",                seg: "vesuvio",  id: null },
-  { key: "pioppaino",          name: "Pioppaino",                    seg: "vesuvio",  id: null },
-  { key: "via-nocera",         name: "Via Nocera",                   seg: "vesuvio",  id: null },
-  { key: "castellammare",      name: "Castellammare di Stabia",      seg: "vesuvio",  id: null, major: true },
+  { key: "ponte-persica",      name: "Ponte Persica",                seg: "vesuvio",  id: null, guess: 50 },
+  { key: "pioppaino",          name: "Pioppaino",                    seg: "vesuvio",  id: null, guess: 51 },
+  { key: "via-nocera",         name: "Via Nocera",                   seg: "vesuvio",  id: null, guess: 52 },
+  { key: "castellammare",      name: "Castellammare di Stabia",      seg: "vesuvio",  id: 53,   major: true },
   { key: "pozzano",            name: "Pozzano",                      seg: "penisola", id: null },
   { key: "scrajo",             name: "Scrajo Terme",                 seg: "penisola", id: null },
   { key: "vico-equense",       name: "Vico Equense",                 seg: "penisola", id: null, major: true },
@@ -280,7 +281,7 @@ const STOPS = [
   { key: "meta",               name: "Meta",                         seg: "penisola", id: null },
   { key: "piano",              name: "Piano di Sorrento",            seg: "penisola", id: null },
   { key: "santagnello",        name: "Sant'Agnello",                 seg: "penisola", id: null },
-  { key: "sorrento",           name: "Sorrento",                     seg: "penisola", id: null, major: true, alt: "capolinea" },
+  { key: "sorrento",           name: "Sorrento",                     seg: "penisola", id: 62,   major: true, alt: "capolinea" },
 ];
 
 const LS_IDS = "vesuviana.ids", LS_FAV = "vesuviana.favs", LS_SEG = "vesuviana.seg";
@@ -291,7 +292,7 @@ let userIds = load(LS_IDS, {});
 let favs = load(LS_FAV, []);
 let seg = load(LS_SEG, "all");
 
-const idOf = s => userIds[s.key] ?? s.id;
+const idOf = s => userIds[s.key] ?? s.id ?? s.guess;
 const urlOf = s => { const id = idOf(s); return id ? `${EAV_BOARD}?stazione=${id}` : EAV_HOME; };
 const norm = t => t.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9 ]/g, " ");
 
@@ -317,7 +318,7 @@ function render() {
       <a class="go" href="${urlOf(s)}" target="_blank" rel="noopener"${id ? "" : ` data-set="${s.key}"`}>
         <span class="name"></span>
         <span class="meta">${id
-          ? `<span class="tag">stazione ${id}</span>${userIds[s.key] != null ? "<span>impostato da te</span>" : ""}`
+          ? `<span class="tag${userIds[s.key] == null && !s.id ? " todo" : ""}">stazione ${id}</span>${userIds[s.key] != null ? "<span>impostato da te</span>" : s.id ? "" : "<span>probabile: controlla il nome sul tabellone</span>"}`
           : `<span class="tag todo">ID da impostare</span><span>tocca per trovarlo</span>`}</span>
       </a>
       <div class="side">
